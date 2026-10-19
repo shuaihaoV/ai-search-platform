@@ -1,0 +1,94 @@
+# =============================================================================
+# AI 搜索平台 —— Docker Compose 部署配置
+#
+# 快速开始：
+#   cp .env.example .env      # 填入 DEEPSEEK_API_KEY（可选改 DEEPSEEK_BASE_URL）
+#   docker compose up -d --build
+#   curl http://127.0.0.1:8080/api/health
+#
+# 安全默认值：
+#   * 只监听宿主 127.0.0.1（公网请置于 TLS 反向代理之后，再改 HOST_BIND）；
+#   * 容器内以 distroless 的 nonroot 用户运行（uid/gid 65532，固定值）、
+#     根文件系统只读、丢弃全部 capability、no-new-privileges；
+#   * 唯一可写位置：缓存命名卷 /app/.cache 与 tmpfs /tmp。
+#
+# 应用可配置的环境变量共 5 个（其余为编译期常量）：
+#   DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / RUST_LOG
+#   ALLOWED_HOSTS  可选，逗号分隔的 Host 白名单（公网反代部署强烈建议设置，
+#                  例如 ALLOWED_HOSTS=search.example.com）
+#   另有 BIND_ADDR：容器内固定为 0.0.0.0:8080，由本文件强制覆盖，无需设置。
+#
+# 部署相关变量（仅本 compose 文件使用，不传给应用）：
+#   HOST_BIND   宿主监听地址，默认 127.0.0.1
+#   PORT        宿主端口，默认 8080
+#   IMAGE_TAG   镜像 tag，默认 latest（本地构建后可用 ai-search-platform:dev 等）
+#
+# 注意：容器内 BIND_ADDR 被强制设为 0.0.0.0:8080（优先级高于 .env），
+#       否则服务只监听容器回环，宿主端口映射将不可达。
+# =============================================================================
+name: ai-search-platform
+
+services:
+  ai-search:
+    image: ghcr.io/shuaihaov/ai-search-platform:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-search
+    restart: unless-stopped
+    init: true
+
+    ports:
+      # 默认仅绑定宿主回环；公网部署建议保留回环 + 反向代理
+      - "${HOST_BIND:-127.0.0.1}:${PORT:-8080}:8080"
+
+    environment:
+      # 容器内必须监听所有网卡；显式覆盖 .env 中的 127.0.0.1
+      BIND_ADDR: "0.0.0.0:8080"
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      RUST_LOG: ${RUST_LOG:-info}
+      # Host 白名单（逗号分隔，防 DNS rebinding）。默认只允许本机访问，
+      # 与 ports 默认绑定 127.0.0.1 相匹配；公网/反代部署请改成对外域名，
+      # 例如 ALLOWED_HOSTS=search.example.com（留空 = 不校验，不推荐）。
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+
+    volumes:
+      # 后端缓存目录固定为进程 CWD 下的 ./.cache；镜像 WORKDIR=/app，
+      # 因此容器内路径是 /app/.cache。
+      # 运行用户是 distroless 的 nonroot（uid/gid 65532）；空命名卷首次创建时
+      # 会继承镜像内 /app/.cache 的属主（65532:65532），无需手工 chown。
+      # 若改用 bind mount（如 ./cache:/app/.cache），必须先在宿主执行
+      #   sudo chown -R 65532:65532 ./cache
+      # 否则容器内会因权限不足无法写缓存。
+      - ai-search-cache:/app/.cache
+
+    # 最小权限：只读根文件系统 + 丢弃全部 capability + 禁止提权
+    # 排障入口（distroless 默认无 shell；镜像内置静态 busybox 及常用 applet 软链）：
+    #   docker exec -it ai-search sh
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    healthcheck:
+      # 镜像为 distroless（无 shell/curl），健康检查复用镜像内的静态 busybox
+      test: ["CMD", "/busybox", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    # 限制日志体积，避免长期运行把磁盘写满
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ai-search-cache:
+    name: ai-search-cache

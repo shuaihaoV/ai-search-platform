@@ -1,0 +1,40 @@
+# ---------- Rust ----------
+/target
+**/*.rs.bk
+*.pdb
+
+# ---------- 前端 ----------
+/frontend/node_modules
+/frontend/dist
+/frontend/.vite
+/frontend/coverage
+frontend/*.log
+pnpm-debug.log*
+.npm
+
+# ---------- 运行时数据 ----------
+/.cache
+/.tmp
+
+# ---------- 环境变量与密钥 ----------
+# 真实密钥只放在本机 .env，绝不入库
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---------- 编辑器 / 操作系统 ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------- 容器 ----------
+# 允许 Dockerfile / compose / .dockerignore 入库
+/docker-data
+
+# ---------- 其它 ----------
+*.log

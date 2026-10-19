@@ -1,0 +1,156 @@
+# =============================================================================
+# Release：推送 tag v* 时构建各平台二进制，并创建 GitHub Release 上传附件
+#
+# 产物（tar.gz + .sha256）：
+#   ai-search-platform-<tag>-x86_64-unknown-linux-gnu.tar.gz   （ubuntu-24.04）
+#   ai-search-platform-<tag>-aarch64-unknown-linux-gnu.tar.gz  （ubuntu-24.04-arm）
+#   ai-search-platform-<tag>-aarch64-apple-darwin.tar.gz       （macos-14 / Apple Silicon）
+#
+# 说明：
+#   * 每个平台都在原生 runner 上构建（aws-lc-rs 含 C/汇编，交叉编译成本高）；
+#   * 前端先构建，rust-embed 在编译期把 frontend/dist 嵌入二进制；
+#   * 同一 tag 重复运行会覆盖已有附件（--clobber），方便补发；
+#   * 也可通过 workflow_dispatch 指定已存在的 tag 重新构建/补传。
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布/补传产物的 tag（例如 v0.1.0，必须已存在）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: "24"
+  PNPM_VERSION: "11.22.0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 创建 Release（幂等：已存在则跳过）
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout（需要完整历史以生成 release notes）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release（idempotent）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag 已存在，跳过创建"
+          else
+            gh release create "$tag" --title "$tag" --generate-notes
+          fi
+
+  # ---------------------------------------------------------------------------
+  # 构建各平台二进制并上传
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [create-release]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-14
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-release.outputs.tag }}
+
+      - name: Setup pnpm ${{ env.PNPM_VERSION }}
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Build frontend（产物将被 rust-embed 嵌入二进制）
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Install Rust 1.97.1（含目标三元组）
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install system build deps（aws-lc-rs 需要 cmake）
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.create-release.outputs.tag }}"
+          name="ai-search-platform-${tag}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/ai-search-platform" "dist/${name}/"
+          for f in README.md LICENSE .env.example; do
+            if [[ -f "$f" ]]; then cp "$f" "dist/${name}/"; fi
+          done
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          else
+            (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          fi
+
+      - name: Upload assets to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.create-release.outputs.tag }}"
+          gh release upload "$tag" dist/*.tar.gz dist/*.sha256 --clobber

@@ -1,0 +1,49 @@
+[package]
+name = "ai-search-platform"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "AI-powered web search/fetch platform backed by DeepSeek Search & Fetch APIs"
+license = "MIT"
+publish = false
+
+[dependencies]
+axum = { version = "0.8.9", features = ["macros"] }
+tokio = { version = "1.53", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["trace", "compression-gzip", "compression-br", "catch-panic", "limit", "timeout", "set-header"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "charset", "http2", "system-proxy", "gzip", "stream"] }
+rust-embed = { version = "8.13.0", features = ["interpolate-folder-path", "mime-guess"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.11.1"
+hex = "0.4.3"
+base64 = "0.23.1"
+url = "2.5.8"
+mime_guess = "2.0.5"
+dotenvy = "0.15.7"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+thiserror = "2.0.21"
+bytes = "1.12.1"
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tempfile = "3.27.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+# NOTE: do not set `panic = "abort"` here. The router installs
+# `tower_http::catch_panic::CatchPanicLayer`, which needs unwinding to turn a
+# handler panic into a 500 instead of terminating the whole server.
+
+[[bin]]
+name = "ai-search-platform"
+path = "src/main.rs"
+
+[lib]
+name = "ai_search_platform"
+path = "src/lib.rs"

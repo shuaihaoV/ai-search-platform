@@ -1,0 +1,46 @@
+# =============================================================================
+# Dependabot：定期更新依赖与 Actions 版本
+# =============================================================================
+version: 2
+updates:
+  # Rust 依赖
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(cargo)"
+    groups:
+      cargo-dependencies:
+        patterns: ["*"]
+
+  # 前端依赖
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(frontend)"
+    groups:
+      npm-dependencies:
+        patterns: ["*"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions)"
+
+  # Dockerfile 基础镜像
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(docker)"
