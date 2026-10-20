@@ -136,7 +136,8 @@ COPY --from=backend /out/ai-search-platform /usr/local/bin/ai-search-platform
 #   BIND_ADDR          监听地址；容器内默认 0.0.0.0:8080，否则端口映射不可达
 #   ALLOWED_HOSTS      可选，逗号分隔的 Host 白名单（公网/反代部署建议设置）
 #   PLATFORM_PASSWD    可选，访问密码的 Argon2id 哈希（不是明文；留空 = 不启用）。
-#                      生成：docker run --rm -i <image> --hash-password
+#                      生成：docker run --rm <image> generate-passwd
+#                            （或 docker run --rm -i <image> hash-password 哈希自定义密码）
 #                      （从 stdin 读取密码，不进入 shell 历史与 ps 输出）
 ENV BIND_ADDR=0.0.0.0:8080 \
     RUST_LOG=info

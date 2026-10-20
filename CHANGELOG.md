@@ -13,6 +13,10 @@
   `POST /api/search`、`POST /api/fetch`；未设置时功能完全惰性，行为与 0.1.0 一致。
   - 访问密码以 **Argon2id PHC 哈希**配置（非明文）；新增 `--hash-password` /
     `hash-password` 子命令，从 stdin 读取密码（8–256 个字符）并输出哈希。
+  - 新增 `generate-passwd` 子命令：直接生成强随机密码及对应哈希（默认 20 字符，
+    `--length 16-64` 可调；字符集排除 `0/O/o`、`1/l/I` 等易混字符；OS CSPRNG +
+    拒绝采样保证无偏）；`--hash-only` 便于脚本使用。Docker 下
+    `docker run --rm <镜像> generate-passwd` 同样可用。
   - 新增 `POST /api/auth/login`：校验密码后签发 **7 天（604800 秒）**有效的无状态 token
     （`v1.<expiry>.<base64url(HMAC-SHA256)>`，签名密钥由密码哈希派生，改密码后旧 token
     全部失效）；登录接口独立限流 **10 次/分钟/IP**。

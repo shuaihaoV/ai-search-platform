@@ -179,7 +179,7 @@ make run                     # 读取 ./.env 并启动，默认 127.0.0.1:8080
 > 只改后端时可 `make build-backend` 快速重编（要求 `frontend/dist` 已存在）；
 > 未安装前端依赖时也能 `cargo check`，`build.rs` 会写入占位页以保证编译可用。
 
-> 可选启用访问密码：先 `printf '%s' '你的密码' | ./target/release/ai-search-platform --hash-password`
+> 可选启用访问密码：先 `./target/release/ai-search-platform generate-passwd`
 > 生成哈希，按[启用访问密码](#启用访问密码可选)写入 `.env` 后重启。
 
 ### 方式四：下载 Release 二进制
@@ -222,7 +222,7 @@ make run
 | `BIND_ADDR` | 否 | `127.0.0.1:8080` | HTTP 监听地址。默认仅本机可访问。 |
 | `RUST_LOG` | 否 | `info` | tracing 日志过滤。例：`debug`、`ai_search_platform=debug,tower_http=info`。 |
 | `ALLOWED_HOSTS` | 否 | 空（不限制） | 可选的 `Host` 白名单，逗号分隔（如 `search.example.com,www.example.com`）。用于公网/反向代理部署防 DNS rebinding：绑定回环时，回环 Host 之外只放行白名单；绑定非回环时，**设置后才校验**（回环 Host 始终放行）。条目不区分大小写，忽略端口与末尾的点。 |
-| `PLATFORM_PASSWD` | 否 | 空（不启用） | **可选访问密码**，值为 **Argon2id PHC 哈希**（不是明文，形如 `$argon2id$v=19$m=19456,t=2,p=1$...`）。设置后首页显示密码框，未验证无法调用 `/api/search`、`/api/fetch`；登录换取 7 天有效 token。用 `--hash-password` 从 stdin 生成（密码 8–256 个字符）。**写入 `.env` 时必须用单引号包裹**（哈希含 `$`，会被 dotenvy 当作变量替换）；留空 = 关闭该功能，行为与之前完全一致。详见[启用访问密码](#启用访问密码可选)。 |
+| `PLATFORM_PASSWD` | 否 | 空（不启用） | **可选访问密码**，值为 **Argon2id PHC 哈希**（不是明文，形如 `$argon2id$v=19$m=19456,t=2,p=1$...`）。设置后首页显示密码框，未验证无法调用 `/api/search`、`/api/fetch`；登录换取 7 天有效 token。用 `generate-passwd` 生成随机密码（或 `hash-password` 哈希自定义密码）。**写入 `.env` 时必须用单引号包裹**（哈希含 `$`，会被 dotenvy 当作变量替换）；留空 = 关闭该功能，行为与之前完全一致。详见[启用访问密码](#启用访问密码可选)。 |
 
 \* **缺失 `DEEPSEEK_API_KEY` 时服务仍能启动**：`/api/health`、`/api/config` 与静态页面均正常，
 但 `/api/search` 与 `/api/fetch` 返回 `502` + `code: "upstream_not_configured"`，
@@ -302,22 +302,42 @@ make run
 默认不启用（`PLATFORM_PASSWD` 为空），行为与 0.1.0 完全一致。启用后，所有访问者共用一个密码
 （**单密码共享门禁，不是多用户账号体系**）。
 
-**1. 生成 Argon2id 哈希**（密码只走 stdin，不进入命令行参数与 shell 历史）：
+**1. 生成密码与哈希**（推荐：让程序生成强随机密码，你只需保存）：
 
 ```bash
-# 源码构建的二进制
-printf '%s' '你的访问密码' | ./target/release/ai-search-platform --hash-password
+# 源码构建的二进制：打印「明文密码 + 可粘贴的配置行」
+./target/release/ai-search-platform generate-passwd
 
-# Docker 部署：用同一镜像只生成哈希，不启动服务
-docker run --rm -i ghcr.io/shuaihaov/ai-search-platform:latest --hash-password
-# 本地 compose 也可以（--build 用当前源码构建，确保二进制支持该子命令）：
-docker compose run --rm --build ai-search --hash-password
+# Docker 部署：在一次性容器里生成，不启动服务
+docker run --rm ghcr.io/shuaihaov/ai-search-platform:latest generate-passwd
+# 本地 compose（--build 用当前源码构建，确保二进制支持该子命令）
+docker compose run --rm --build ai-search -- generate-passwd
 ```
 
-> 密码长度 **8–256 个字符**；建议使用 ASCII 字符（登录接口按 UTF-8 字节长度限制 256 字节，
-> 非 ASCII 密码请自行控制总字节数）。
-> 子命令从 stdin 读取**一行**：管道输入不会被终端回显；交互式输入时终端本身可能回显，
-> 请注意遮挡屏幕。密码不会写入任何文件或日志。
+输出示例：
+
+```
+已生成随机访问密码（只显示这一次，请立即保存）
+
+  明文密码：aH3jebDuePfLuxsAfNse
+  配置行　：PLATFORM_PASSWD='$argon2id$v=19$m=19456,t=2,p=1$...$...'
+```
+
+- 默认 **20 个字符**，可用 `--length 16-64` 调整；
+- 字符集刻意排除了易混字符 `0/O/o`、`1/l/I`，便于手抄；
+- 使用操作系统 CSPRNG + 拒绝采样，字符分布无偏；
+- 脚本中可加 `--hash-only` 只输出配置行（避免明文进入日志）；
+- **明文只显示这一次**，请立即保存到密码管理器。
+
+**1b. 如果要用自定义密码**（哈希由你提供的密码生成，密码只走 stdin，不进入命令行参数与 shell 历史）：
+
+```bash
+printf '%s' '你的访问密码' | ./target/release/ai-search-platform hash-password
+docker run --rm -i ghcr.io/shuaihaov/ai-search-platform:latest hash-password
+```
+
+> 密码长度 **8–256 个字符**。子命令从 stdin 读取**一行**：管道输入不会被终端回显；
+> 交互式输入时终端本身会回显，请注意遮挡屏幕。密码与哈希都不会写入任何文件或日志。
 
 **2. 写入 `.env`（必须用单引号包裹）**：
 
@@ -959,10 +979,10 @@ CSRF 拒绝、安全响应头、404 JSON、缓存文件名不含明文关键词�
 | 二次请求仍回源 | 两次请求体不完全一致（`force_refresh`、`count`、`need_content` 等均进键）；确认是同一 CWD 的缓存目录 |
 | 页面是「前端尚未构建」占位页 | debug 构建且 `frontend/dist` 只有占位页；执行 `make frontend` 后重启 |
 | 页面样式丢失 / 资源 404 | release 二进制嵌入的是构建时的 `dist`；前端改动后必须重新构建后端 |
-| 启动报「PLATFORM_PASSWD 必须是以 `$argon2id$` 开头…」 | `.env` 中哈希未加单引号被 dotenvy 展开，或误填了明文；用 `--hash-password` 重新生成，并以 `PLATFORM_PASSWD='$argon2id$...'` 写入 |
+| 启动报「PLATFORM_PASSWD 必须是以 `$argon2id$` 开头…」 | `.env` 中哈希未加单引号被 dotenvy 展开，或误填了明文；用 `generate-passwd` 或 `hash-password` 重新生成，并以 `PLATFORM_PASSWD='$argon2id$...'` 写入 |
 | 首页一直停在密码框 / 搜索返回 `401 unauthorized` | token 已过期或密码已更换；重新输入密码即可。若确认密码正确仍失败，检查服务端 `/api/config` 的 `auth.enabled` |
 | 登录返回 `429 rate_limited` | 登录限流 10 次/分钟/IP；按 `retry_after_seconds` / `Retry-After` 等待后重试 |
-| 忘记访问密码 | Argon2 哈希不可逆；重新执行 `--hash-password` 生成新哈希替换后重启（旧 token 全部失效） |
+| 忘记访问密码 | Argon2 哈希不可逆；重新执行 `generate-passwd` 生成新密码与哈希替换后重启（旧 token 全部失效） |
 | 需要进入容器排障 | 运行镜像是 distroless，但内置 busybox applet：`docker exec -it ai-search sh` 即可获得 sh/ls/cat/grep 等常用命令 |
 
 ### 验收相关

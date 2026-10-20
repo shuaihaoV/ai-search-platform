@@ -27,6 +27,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 thiserror = "2.0.21"
 bytes = "1.12.1"
 argon2 = "0.6.0"
+getrandom = "0.4.3"
 
 [dev-dependencies]
 http-body-util = "0.1.5"

@@ -7,7 +7,7 @@
 #   curl http://127.0.0.1:8080/api/health
 #
 # 可选访问密码：
-#   docker run --rm -i ghcr.io/shuaihaov/ai-search-platform:latest --hash-password
+#   docker compose run --rm --build ai-search -- generate-passwd
 #   将输出的哈希写入 .env（**必须用单引号包裹**，见下方 PLATFORM_PASSWD 注释），
 #   然后 docker compose up -d 生效；首页会先要求输入访问密码。
 #
@@ -59,7 +59,8 @@ services:
       # 例如 ALLOWED_HOSTS=search.example.com（留空 = 不校验，不推荐）。
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
       # 可选访问密码：值为 Argon2id PHC 哈希（不是明文），留空 = 不启用。
-      # 生成方式：docker run --rm -i <image> --hash-password（从 stdin 读密码）。
+      # 生成方式：docker compose run --rm --build ai-search -- generate-passwd
+      #   也可哈希自定义密码：... -- hash-password（从 stdin 读一行）。
       # ⚠ Argon2 哈希含 `$`，Compose 会对 .env 的值做变量插值，**必须用单引号**
       #   包裹，否则 `$argon2id$v=19$...` 会被展开成空串导致启动失败：
       #     PLATFORM_PASSWD='$argon2id$v=19$m=19456,t=2,p=1$...$...'

@@ -12,16 +12,37 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    // `--hash-password` / `hash-password`: turn a plaintext password from stdin
-    // into the Argon2id hash expected by `PLATFORM_PASSWD`. Reading from stdin
-    // (not argv) keeps the password out of shell history and `ps` output.
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() == 1 && matches!(args[0].as_str(), "--hash-password" | "hash-password") {
-        return hash_password_command();
+    // Subcommands run before any configuration is loaded, so they work even on
+    // a machine with no `.env`, no API key and no writable cache directory.
+    //
+    // A leading `--` is tolerated so that `docker run <image> -- generate-passwd`
+    // (a common muscle memory) behaves the same as `docker run <image> generate-passwd`.
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--") {
+        args.remove(0);
     }
-    if !args.is_empty() {
-        eprintln!("未知参数；用法: ai-search-platform [--hash-password]");
-        return ExitCode::from(2);
+
+    match args.first().map(String::as_str) {
+        Some("generate-passwd" | "gen-passwd") => {
+            return generate_passwd_command(&args[1..]);
+        }
+        Some("hash-password" | "--hash-password") => {
+            if args.len() > 1 {
+                eprintln!("`hash-password` 不接受额外参数；用法: ai-search-platform hash-password");
+                return ExitCode::from(2);
+            }
+            return hash_password_command();
+        }
+        Some("help" | "--help" | "-h") => {
+            print_usage();
+            return ExitCode::SUCCESS;
+        }
+        None => {}
+        Some(other) => {
+            eprintln!("未知子命令: {other}");
+            print_usage();
+            return ExitCode::from(2);
+        }
     }
 
     // `.env` is optional: real deployments usually inject env vars directly.
@@ -212,6 +233,169 @@ fn passwd_env_hint(hash: &str) -> String {
     format!("PLATFORM_PASSWD='{hash}'")
 }
 
+/// Default length for a generated password.
+const GENERATED_PASSWORD_LEN: usize = 20;
+/// Accepted range for `--length`.
+const GENERATED_PASSWORD_MIN: usize = 16;
+const GENERATED_PASSWORD_MAX: usize = 64;
+
+/// Characters that are unambiguous when transcribed by hand.
+///
+/// Excluded: `0`/`O`/`o`, `1`/`l`/`I` — the pairs people routinely confuse.
+const PASSWORD_ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/// Generate a random password from the OS CSPRNG.
+///
+/// Uses rejection sampling so every character is uniformly distributed
+/// (plain `byte % alphabet_len` would bias the first `256 % len` characters).
+fn generate_random_password(length: usize) -> Result<String, getrandom::Error> {
+    const LIMIT: usize = 256 / PASSWORD_ALPHABET.len() * PASSWORD_ALPHABET.len();
+    let mut out = String::with_capacity(length);
+    let mut buf = [0u8; 64];
+    while out.len() < length {
+        let take = (length - out.len()).min(buf.len());
+        getrandom::fill(&mut buf[..take])?;
+        for &byte in &buf[..take] {
+            if out.len() == length {
+                break;
+            }
+            if (byte as usize) < LIMIT {
+                let index = (byte as usize) % PASSWORD_ALPHABET.len();
+                out.push(PASSWORD_ALPHABET[index] as char);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn print_usage() {
+    eprintln!(
+        "\
+AI 搜索平台 v{version}
+
+用法:
+  ai-search-platform                   启动服务
+  ai-search-platform generate-passwd   生成随机访问密码及其 Argon2id 哈希
+  ai-search-platform hash-password     把 stdin 读入的密码转成 Argon2id 哈希
+  ai-search-platform help              显示本帮助
+
+generate-passwd 选项:
+  --length <N>   密码长度，{min}-{max}（默认 {default}）
+  --hash-only    只输出配置行（不打印明文密码，便于脚本使用）
+
+环境变量:
+  DEEPSEEK_API_KEY   上游 API Key（必填）
+  DEEPSEEK_BASE_URL  上游 Base URL
+  BIND_ADDR          监听地址（默认 127.0.0.1:8080）
+  RUST_LOG           日志过滤
+  ALLOWED_HOSTS      Host 白名单（可选）
+  PLATFORM_PASSWD    访问密码的 Argon2id 哈希（可选；用上面的子命令生成）
+
+Docker:
+  docker run --rm <image> generate-passwd
+  docker run --rm -i <image> hash-password",
+        version = ai_search_platform::config::VERSION,
+        min = GENERATED_PASSWORD_MIN,
+        max = GENERATED_PASSWORD_MAX,
+        default = GENERATED_PASSWORD_LEN,
+    );
+}
+
+/// `generate-passwd`: create a strong random password *and* its hash, so the
+/// operator never has to invent one (weak passwords are the usual failure mode).
+fn generate_passwd_command(args: &[String]) -> ExitCode {
+    use std::io::Write;
+
+    let mut length = GENERATED_PASSWORD_LEN;
+    let mut hash_only = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--length" | "-l" => {
+                let Some(raw) = args.get(index + 1) else {
+                    eprintln!("`--length` 需要一个数字参数");
+                    return ExitCode::from(2);
+                };
+                match raw.parse::<usize>() {
+                    Ok(value)
+                        if (GENERATED_PASSWORD_MIN..=GENERATED_PASSWORD_MAX).contains(&value) =>
+                    {
+                        length = value;
+                    }
+                    _ => {
+                        eprintln!(
+                            "密码长度必须是 {GENERATED_PASSWORD_MIN}-{GENERATED_PASSWORD_MAX} 之间的整数（收到 {raw}）"
+                        );
+                        return ExitCode::from(2);
+                    }
+                }
+                index += 2;
+            }
+            "--hash-only" => {
+                hash_only = true;
+                index += 1;
+            }
+            other => {
+                eprintln!("`generate-passwd` 不认识的参数: {other}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let password = match generate_random_password(length) {
+        Ok(password) => password,
+        Err(_) => {
+            eprintln!("错误: 系统随机数生成器不可用，无法安全生成密码");
+            return ExitCode::FAILURE;
+        }
+    };
+    let hash = match ai_search_platform::auth::hash_password(&password) {
+        Ok(hash) => hash,
+        Err(err) => {
+            eprintln!("生成哈希失败: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let hint = passwd_env_hint(&hash);
+
+    if hash_only {
+        // Machine-friendly: just the `.env` line.
+        if writeln!(out, "{hint}").is_err() {
+            eprintln!("输出失败");
+            return ExitCode::FAILURE;
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let printed = writeln!(
+        out,
+        "\
+已生成随机访问密码（只显示这一次，请立即保存）
+
+  明文密码：{password}
+  配置行　：{hint}
+
+把「配置行」写入 .env（或容器环境变量）后重启服务，即可启用访问密码。
+登录时输入上面的「明文密码」。
+
+提示：
+  * 哈希中的 `$` 必须用单引号保护，否则 dotenvy 会当作变量展开导致启动失败；
+  * 密码可通过 `--length {min}-{max}` 调整长度（默认 {default}）；
+  * 脚本场景请用 `--hash-only` 只取配置行，避免明文进入日志/文件。",
+        min = GENERATED_PASSWORD_MIN,
+        max = GENERATED_PASSWORD_MAX,
+        default = GENERATED_PASSWORD_LEN
+    );
+    if printed.is_err() {
+        eprintln!("输出失败");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 /// Read a password from stdin and print its Argon2id hash.
 fn hash_password_command() -> ExitCode {
     use std::io::{BufRead, Write};
@@ -273,6 +457,56 @@ fn hash_password_command() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_password_has_requested_length_and_is_unambiguous() {
+        for length in [GENERATED_PASSWORD_MIN, 20, 32, GENERATED_PASSWORD_MAX] {
+            let password = generate_random_password(length).expect("csprng");
+            assert_eq!(password.chars().count(), length);
+            for ch in password.chars() {
+                assert!(
+                    PASSWORD_ALPHABET.contains(&(ch as u8)),
+                    "unexpected character {ch:?} in generated password"
+                );
+                assert!(
+                    !"0Oo1lI".contains(ch),
+                    "generated password must avoid look-alike character {ch:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_passwords_are_unique() {
+        let first = generate_random_password(20).expect("csprng");
+        let second = generate_random_password(20).expect("csprng");
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn generated_password_round_trips_through_argon2() {
+        // The bytes printed on the terminal must be exactly what verifies,
+        // otherwise an operator could be locked out by a display issue.
+        let password = generate_random_password(24).expect("csprng");
+        let hash = ai_search_platform::auth::hash_password(&password).expect("hash");
+        ai_search_platform::auth::validate_password_hash(&hash).expect("valid phc");
+        assert!(ai_search_platform::auth::verify_password(&hash, &password));
+        assert!(!ai_search_platform::auth::verify_password(&hash, "wrong"));
+    }
+
+    #[test]
+    fn password_alphabet_is_biased_free() {
+        // Rejection sampling requires the alphabet to be much smaller than 256,
+        // and the accepted limit to be a whole multiple of it.
+        let len = PASSWORD_ALPHABET.len();
+        assert!(len < 128, "alphabet too large for cheap rejection sampling");
+        assert_eq!((256 / len) * len % len, 0);
+        // No duplicates: a repeated char would skew the distribution.
+        let mut sorted = PASSWORD_ALPHABET.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), len, "alphabet must not contain duplicates");
+    }
 
     #[test]
     fn env_hint_is_single_quoted() {
