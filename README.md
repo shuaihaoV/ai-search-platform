@@ -13,25 +13,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange?logo=rust&logoColor=white)](Cargo.toml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[📚 文档](#-文档) · [✨ 功能特性](#-功能特性) · [🚀 快速开始](#-快速开始) · [⚙️ 配置](#-配置) · [🔍 使用](#-使用) · [🛡 安全](#-安全) · [💻 开发](#-开发) · [📄 License](#-license)
+[✨ 功能特性](#-功能特性) · [🚀 快速开始](#-快速开始) · [⚙️ 配置](#-配置) · [🔍 使用](#-使用) · [🛡 安全](#-安全) · [📚 文档](#-文档) · [💻 开发](#-开发) · [📄 License](#-license)
 
 </div>
 
 ---
-
-## 📚 文档
-
-| 文档 | 内容 |
-|---|---|
-| [README.md](README.md) | 项目简介、快速开始、配置与搜索语法（本文件） |
-| [docs/API.md](docs/API.md) | **完整 API 参考**：端点、请求/响应示例、错误码表、curl 示例 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **架构说明**：请求链路、技术栈、目录结构、缓存设计、并发/限流模型、内置常量 |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维**：反向代理示例（Caddy/nginx/Traefik）、systemd、Docker 生产建议、备份升级、故障排查 |
-| [docs/SECURITY.md](docs/SECURITY.md) | **安全白皮书**：CSRF/SSRF/CSP/限流/Host 白名单/访问密码、威胁模型、已知限制 |
-| [docs/AUDIT.md](docs/AUDIT.md) | 三轮安全审计摘要与修复记录 |
-| [docs/RELEASING.md](docs/RELEASING.md) | 发布流程：版本号规则、发布前检查、打 tag、镜像策略、回滚 |
-| [SECURITY.md](SECURITY.md) | 安全漏洞**私密报告流程**（请勿公开 Issue） |
-| [CONTRIBUTING.md](CONTRIBUTING.md) / [CHANGELOG.md](CHANGELOG.md) | 贡献指南 / 版本变更记录 |
 
 > **项目状态**：`v0.1.0`，功能与接口仍可能小幅调整；欢迎 Issue / PR 参与共建。
 
@@ -318,6 +304,22 @@ PLATFORM_PASSWD='$argon2id$v=19$m=19456,t=2,p=1$...$...'
 
 完整护栏明细与威胁模型：[docs/SECURITY.md](docs/SECURITY.md)；
 漏洞**私密**报告流程：[SECURITY.md](SECURITY.md)。
+
+---
+
+## 📚 文档
+
+| 文档 | 内容 |
+|---|---|
+| [README.md](README.md) | 项目简介、快速开始、配置与搜索语法（本文件） |
+| [docs/API.md](docs/API.md) | **完整 API 参考**：端点、请求/响应示例、错误码表、curl 示例 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **架构说明**：请求链路、技术栈、目录结构、缓存设计、并发/限流模型、内置常量 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | **部署与运维**：反向代理示例（Caddy/nginx/Traefik）、systemd、Docker 生产建议、备份升级、故障排查 |
+| [docs/SECURITY.md](docs/SECURITY.md) | **安全白皮书**：CSRF/SSRF/CSP/限流/Host 白名单/访问密码、威胁模型、已知限制 |
+| [docs/AUDIT.md](docs/AUDIT.md) | 三轮安全审计摘要与修复记录 |
+| [docs/RELEASING.md](docs/RELEASING.md) | 发布流程：版本号规则、发布前检查、打 tag、镜像策略、回滚 |
+| [SECURITY.md](SECURITY.md) | 安全漏洞**私密报告流程**（请勿公开 Issue） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) / [CHANGELOG.md](CHANGELOG.md) | 贡献指南 / 版本变更记录 |
 
 ---
 
