@@ -129,12 +129,15 @@ COPY --from=tools --chown=${APP_UID}:${APP_GID} /app /app
 WORKDIR /app
 COPY --from=backend /out/ai-search-platform /usr/local/bin/ai-search-platform
 
-# 应用配置全部通过环境变量注入（共 5 个，详见 README）：
-#   DEEPSEEK_API_KEY  上游 API Key（缺失时服务可启动，搜索/抓取返回 503）
-#   DEEPSEEK_BASE_URL 上游 Base URL（默认官方地址）
-#   RUST_LOG          日志级别
-#   BIND_ADDR        监听地址；容器内默认 0.0.0.0:8080，否则端口映射不可达
-#   ALLOWED_HOSTS     可选，逗号分隔的 Host 白名单（公网/反代部署建议设置）
+# 应用配置全部通过环境变量注入（共 6 个，详见 README）：
+#   DEEPSEEK_API_KEY   上游 API Key（缺失时服务可启动，搜索/抓取返回 503）
+#   DEEPSEEK_BASE_URL  上游 Base URL（默认官方地址）
+#   RUST_LOG           日志级别
+#   BIND_ADDR          监听地址；容器内默认 0.0.0.0:8080，否则端口映射不可达
+#   ALLOWED_HOSTS      可选，逗号分隔的 Host 白名单（公网/反代部署建议设置）
+#   PLATFORM_PASSWD    可选，访问密码的 Argon2id 哈希（不是明文；留空 = 不启用）。
+#                      生成：docker run --rm -i <image> --hash-password
+#                      （从 stdin 读取密码，不进入 shell 历史与 ps 输出）
 ENV BIND_ADDR=0.0.0.0:8080 \
     RUST_LOG=info
 

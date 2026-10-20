@@ -1172,3 +1172,74 @@ async fn auth_ignores_xff_for_login_rate_limit() {
     }
     assert!(saw_rate_limit, "login rate limit never triggered");
 }
+
+/// Multi-byte passwords must round-trip end to end.
+///
+/// `--hash-password` enforces its 8..=256 bound in **characters**; a login-side
+/// bound measured in **bytes** rejected any password whose UTF-8 form exceeded
+/// 256 bytes (e.g. 100 CJK characters = 300 bytes), locking the operator out of
+/// a password the generator had accepted. Both sides must count characters.
+#[tokio::test]
+async fn auth_accepts_multibyte_password_round_trip() {
+    let password = "密".repeat(100); // 100 chars / 300 UTF-8 bytes
+    assert_eq!(password.chars().count(), 100);
+    assert!(password.len() > 256);
+
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), &password).await;
+
+    let (status, body) = send(&app, login_request(&password)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "multi-byte password must log in: {body}"
+    );
+    let token = body["token"].as_str().expect("token").to_owned();
+    let (status, _body) = send(&app, search_request_with_token("multibyte", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The bound still applies — counted in characters, so 257 ASCII chars fail
+    // fast (before Argon2) and 256 pass the pre-check.
+    let (status, body) = send(&app, login_request(&"a".repeat(257))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "invalid_password");
+    let (status, body) = send(&app, login_request(&"a".repeat(256))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "wrong 256-char password");
+    assert_eq!(body["error"]["code"], "invalid_password");
+}
+
+/// Argon2 verification must be bounded: a burst of concurrent logins queues on
+/// a small global semaphore (and runs on the blocking pool) instead of spawning
+/// unbounded CPU/memory work. Excess attempts may be rejected with a retryable
+/// 429, but never with a 5xx and never by stalling the whole service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn auth_login_burst_is_bounded() {
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    // Twice the verification slots; every attempt uses a distinct peer so the
+    // per-IP brute-force limiter does not short-circuit the burst.
+    let attempts = ai_search_platform::config::AUTH_LOGIN_MAX_CONCURRENT * 2;
+    let mut handles = Vec::new();
+    for index in 0..attempts {
+        let app = app.clone();
+        handles.push(tokio::spawn(async move {
+            let request = login_request("wrong-password");
+            let addr: SocketAddr = format!("198.51.100.{}:1234", index + 10).parse().unwrap();
+            let mut request = request;
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(addr));
+            app.oneshot(request).await.expect("infallible").status()
+        }));
+    }
+    for handle in handles {
+        let status = handle.await.expect("login task");
+        assert!(
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::TOO_MANY_REQUESTS,
+            "unexpected status {status}: burst must be bounded, not fail with 5xx"
+        );
+    }
+}

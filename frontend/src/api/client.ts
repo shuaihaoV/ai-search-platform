@@ -175,6 +175,24 @@ function authHeader(): Record<string, string> {
 /** localStorage key for the access token (never the password). */
 export const AUTH_TOKEN_STORAGE_KEY = 'ai-search-platform:auth-token';
 
+/**
+ * Token shape issued by the backend: `v1.<expiry-unix>.<base64url-signature>`.
+ *
+ * The token is untrusted local state once it sits in localStorage (extensions,
+ * other scripts, partial writes). Validating the shape before using it as an
+ * `Authorization` header prevents two failure modes:
+ * - malformed header values make `fetch` throw a TypeError, which surfaced as a
+ *   generic "network error" and left the user unable to return to the gate;
+ * - alerting the server to garbage it can only reject anyway.
+ * A well-formed but forged token still reaches the server and gets a 401,
+ * which is the intended server-authority path.
+ */
+const AUTH_TOKEN_PATTERN = /^v1\.\d{1,20}\.[A-Za-z0-9_-]+$/;
+
+export function isValidAuthToken(token: unknown): token is string {
+  return typeof token === 'string' && AUTH_TOKEN_PATTERN.test(token);
+}
+
 /** In-memory fallback when localStorage is unavailable. */
 let memoryToken: string | null = null;
 
@@ -188,6 +206,16 @@ export function getAuthToken(): string | null {
     if (raw === null || raw.trim() === '') {
       return null;
     }
+    if (!isValidAuthToken(raw)) {
+      // 本地 token 被篡改/损坏：清掉并按未登录处理（回到门禁），
+      // 避免用非法 header 发起请求后停留在无法恢复的“网络错误”状态。
+      try {
+        window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+      return null;
+    }
     memoryToken = raw;
     return raw;
   } catch {
@@ -198,6 +226,10 @@ export function getAuthToken(): string | null {
 
 /** Persist the access token. Never pass the password here. */
 export function setAuthToken(token: string): void {
+  if (!isValidAuthToken(token)) {
+    // 只接受服务端签发的固定格式；异常值不入内存/存储
+    return;
+  }
   memoryToken = token;
   try {
     window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
@@ -276,10 +308,19 @@ async function requestJson(
   return body;
 }
 
-function mapHttpStatusToCode(status: number): string {
+/**
+ * Fallback error code when the response carried no structured error body.
+ *
+ * Exported for unit tests: the auth gate relies on 401 mapping to
+ * `unauthorized`, otherwise an unstructured 401 would render as a generic
+ * request error and never send the user back to the password gate.
+ */
+export function mapHttpStatusToCode(status: number): string {
   switch (status) {
     case 400:
       return 'invalid_request';
+    case 401:
+      return 'unauthorized';
     case 403:
       return 'forbidden';
     case 404:
@@ -326,8 +367,8 @@ export async function login(
   const record = body as Record<string, unknown>;
   const token = typeof record['token'] === 'string' ? record['token'] : '';
   const expiresAt = typeof record['expires_at'] === 'number' ? record['expires_at'] : 0;
-  if (token === '') {
-    throw new ApiError({ code: 'internal_error', message: '登录响应缺少 token' });
+  if (!isValidAuthToken(token)) {
+    throw new ApiError({ code: 'internal_error', message: '登录响应缺少或携带了非法的 token' });
   }
   return { token, expiresAt };
 }

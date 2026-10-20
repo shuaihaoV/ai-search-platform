@@ -139,6 +139,10 @@ export default function App(): ReactElement {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  // 登录成功后把焦点交给搜索框（由 effect 在门禁卸载、搜索框挂载后执行）
+  const focusSearchAfterLoginRef = useRef(false);
+  // 供回调读取最新门禁状态：门禁期间不得发起受保护请求
+  const authRequiredRef = useRef(false);
 
   // /api/config 是否已落定（成功或失败）：首屏自动搜索需等它，确保默认值优先来自接口
   const [configSettled, setConfigSettled] = useState(false);
@@ -181,6 +185,25 @@ export default function App(): ReactElement {
     applyTheme(themeMode);
     saveTheme(themeMode);
   }, [themeMode]);
+
+  useEffect(() => {
+    authRequiredRef.current = authRequired;
+  }, [authRequired]);
+
+  // 门禁解除（登录成功）后聚焦搜索框：搜索框此时才真正挂载，
+  // 直接在登录回调里 setTimeout 会早于 React 提交而聚焦失败。
+  useEffect(() => {
+    if (authRequired || !focusSearchAfterLoginRef.current) {
+      return undefined;
+    }
+    focusSearchAfterLoginRef.current = false;
+    const timer = window.setTimeout(() => {
+      inputRef.current?.focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [authRequired]);
 
   // auto 模式监听系统配色变化
   useEffect(() => {
@@ -253,10 +276,19 @@ export default function App(): ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 执行一次搜索 */
-  /** token 失效：清空并回到门禁 */
+  /** token 失效：清空并回到门禁（同时关闭所有浮层、中止在途请求） */
   const requirePasswordAgain = useCallback((): void => {
     clearAuthToken();
+    // 重新登录后需要再次执行「首屏恢复」：把 URL 中因 401 中断的搜索补回来
+    bootstrappedRef.current = false;
+    searchAbortRef.current?.abort();
+    searchAbortRef.current = null;
+    fetchAbortRef.current?.abort();
+    fetchAbortRef.current = null;
+    setFetchState({ ...INITIAL_FETCH_STATE });
+    setSyntaxModalOpen(false);
+    setSettingsModalOpen(false);
+    setSearchState(INITIAL_SEARCH_STATE);
     setAuthRequired(true);
     setAuthNotice('访问密码已失效，请重新输入');
     setAuthError(null);
@@ -264,6 +296,10 @@ export default function App(): ReactElement {
 
   const runSearch = useCallback(
     (rawQuery: string, options: { settings: SearchSettings; echo: RequestEcho; syncUrl: boolean }): void => {
+      // 门禁未解除时不发起受保护请求：首屏/popstate 的恢复会在登录成功后重新触发
+      if (authRequiredRef.current) {
+        return;
+      }
       const queryValidation = validateQuery(rawQuery, limits.query_max_chars);
       if (!queryValidation.ok) {
         setQueryError(queryValidation.error ?? '关键词不合法');
@@ -338,7 +374,6 @@ export default function App(): ReactElement {
           }
           if (isUnauthorizedError(error)) {
             requirePasswordAgain();
-            setSearchState(INITIAL_SEARCH_STATE);
             return;
           }
           const apiError =
@@ -355,11 +390,10 @@ export default function App(): ReactElement {
         }
       })();
     },
-    [limits],
+    [limits, requirePasswordAgain],
   );
 
-  /** 由当前 query + settings 组合请求回显 */
-  const buildEcho = useCallback(
+  /** 由当前 query + settings 组合请求回显 */  const buildEcho = useCallback(
     (rawQuery: string, currentSettings: SearchSettings): RequestEcho => ({
       query: rawQuery.trim(),
       count: currentSettings.count,
@@ -431,10 +465,11 @@ export default function App(): ReactElement {
     [buildEcho, runSearch, settings.force_refresh],
   );
 
-  // 首屏：解析 URL 并在 /api/config 落定后自动搜索
-  // （先取配置可确保 count / need_content 等默认值优先来自接口）
+  // 首屏：解析 URL 并等待「配置落定 + 门禁解除」后自动搜索
+  // （先取配置可确保 count / need_content 等默认值优先来自接口；
+  //   门禁未解除时不发请求，登录成功后本 effect 会再次运行并恢复 URL 中的搜索）
   useEffect(() => {
-    if (bootstrappedRef.current || !configSettled) {
+    if (bootstrappedRef.current || !configSettled || authRequired) {
       return;
     }
     bootstrappedRef.current = true;
@@ -458,9 +493,9 @@ export default function App(): ReactElement {
     } else if (parsed.status === 'invalid') {
       setInvalidUrl({ raw: parsed.raw, reason: parsed.reason });
     }
-    // 配置落定后仅执行一次
+    // 配置落定且门禁解除后仅执行一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configSettled]);
+  }, [configSettled, authRequired]);
 
   // popstate：前进/后退恢复并重新搜索
   useEffect(() => {
@@ -556,6 +591,11 @@ export default function App(): ReactElement {
           if (controller.signal.aborted || error instanceof AbortedError) {
             return;
           }
+          // 抓取接口同样受门禁保护：401 必须回到门禁，而不是只把错误显示在抽屉里
+          if (isUnauthorizedError(error)) {
+            requirePasswordAgain();
+            return;
+          }
           const apiError =
             error instanceof ApiError
               ? error
@@ -569,7 +609,7 @@ export default function App(): ReactElement {
         }
       })();
     },
-    [limits.fetch_url_max_chars, notify],
+    [limits.fetch_url_max_chars, notify, requirePasswordAgain],
   );
 
   const handleFetch = useCallback(
@@ -678,11 +718,9 @@ export default function App(): ReactElement {
         const result = await loginApi(password);
         setAuthToken(result.token);
         setAuthNotice(null);
+        // 搜索框在门禁卸载后才挂载，焦点转移交给 authRequired 变化的 effect
+        focusSearchAfterLoginRef.current = true;
         setAuthRequired(false);
-        // 放行后把焦点交给搜索框
-        window.setTimeout(() => {
-          inputRef.current?.focus();
-        }, 0);
       } catch (error) {
         if (error instanceof AbortedError) {
           return;
@@ -791,8 +829,8 @@ export default function App(): ReactElement {
         }
         tabIndex={-1}
       >
-        {/* 页面唯一 h1：视觉上隐藏，供屏幕阅读器 / SEO 建立标题层级 */}
-        <h1 className="sr-only">AI 搜索平台</h1>
+        {/* 标题层级：门禁态由 PasswordGate 提供唯一 h1，避免出现两个 h1 */}
+        {authRequired ? null : <h1 className="sr-only">AI 搜索平台</h1>}
         <div
           className={
             authRequired
@@ -802,7 +840,16 @@ export default function App(): ReactElement {
                 : 'container container-landing'
           }
         >
-          {authRequired ? (
+          {config === null ? (
+            /* 配置（含 auth.enabled）未返回前不渲染搜索/结果 UI：
+               否则未验证访问者会短暂看到搜索界面（门禁闪烁），且无法判断是否需要密码 */
+            <>
+              <div className="sr-only" role="status">
+                正在加载配置…
+              </div>
+              <Skeleton rows={1} />
+            </>
+          ) : authRequired ? (
             <PasswordGate
               onSubmit={handlePasswordSubmit}
               loading={authLoading}

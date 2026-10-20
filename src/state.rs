@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use tokio::sync::Semaphore;
+
 use crate::auth::TokenIssuer;
 use crate::cache::Cache;
 use crate::config::Config;
@@ -23,6 +25,8 @@ struct Inner {
     /// Present only when the optional access password is configured.
     token_issuer: Option<TokenIssuer>,
     login_limiter: RateLimiter,
+    /// Caps concurrent Argon2 verifications (each needs ~19 MiB and a core).
+    login_permits: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -37,6 +41,7 @@ impl AppState {
                 fetch_limiter: RateLimiter::new(crate::config::RATE_LIMIT_PER_MINUTE),
                 token_issuer,
                 login_limiter: RateLimiter::new(crate::config::AUTH_LOGIN_LIMIT_PER_MINUTE),
+                login_permits: Arc::new(Semaphore::new(crate::config::AUTH_LOGIN_MAX_CONCURRENT)),
             }),
         }
     }
@@ -69,5 +74,13 @@ impl AppState {
     /// Separate bucket for login attempts (brute-force brake).
     pub fn login_limiter(&self) -> &RateLimiter {
         &self.inner.login_limiter
+    }
+
+    /// Semaphore capping concurrent password verifications.
+    ///
+    /// Returned by value so a handler can hold an owned permit across an
+    /// `.await` without borrowing `self`.
+    pub fn login_permits(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.inner.login_permits)
     }
 }

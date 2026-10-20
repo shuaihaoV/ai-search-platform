@@ -119,8 +119,10 @@ chore(ci): 升级 actions/checkout 到 v5
   不允许 panic 放大成 500。
 - 新的输入必须校验长度/类型/协议；新的外部 URL 处理必须考虑 SSRF。
 - 所有限制优先做成**编译期常量**（`src/config.rs`），不要随意增加环境变量——
-  环境变量只保留必要项（当前 4 个常规变量 + 1 个可选加固 `ALLOWED_HOSTS`），
-  这是项目的设计取舍。
+  环境变量只保留必要项（当前 4 个常规变量 + 2 个可选加固：`ALLOWED_HOSTS`、
+  `PLATFORM_PASSWD`），这是项目的设计取舍。
+- 鉴权相关改动必须保证：未设置 `PLATFORM_PASSWD` 时行为完全不变（惰性），
+  密码/Token 不写日志，并补充正向与负向测试。
 - 新增日志避免输出密钥、请求头或缓存内容。
 
 ### 前端（`frontend/`）
@@ -149,8 +151,8 @@ make smoke     # 端到端验收：自动起 mock 上游 + release 二进制，�
 
 - 后端集成测试：`tests/api_integration.rs`（缓存、CSRF、SSRF、限流、错误映射、静态资源等）。
 - 前端单测：`frontend/src/test/`（URL 状态、Base64、Markdown 安全、主题、校验等）。
-- 涉及安全逻辑（`src/security.rs`、`src/validation.rs`、`src/cache.rs`、`src/assets.rs`）的改动
-  **必须**补充或更新测试，尤其是拒绝路径（负向用例）。
+- 涉及安全逻辑（`src/security.rs`、`src/auth.rs`、`src/validation.rs`、`src/cache.rs`、
+  `src/assets.rs`）的改动**必须**补充或更新测试，尤其是拒绝路径（负向用例）。
 
 ---
 

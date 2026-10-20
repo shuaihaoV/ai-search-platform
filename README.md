@@ -108,6 +108,8 @@ curl -s http://127.0.0.1:8080/ | grep -o '<title>[^<]*</title>'
   丢弃全部 capability 并禁止提权；自带健康检查（`/api/health`）与日志轮转。
 - `ALLOWED_HOSTS` 已由 compose 透传，默认 `localhost,127.0.0.1`（与仅监听回环一致）；
   公网/反代部署时改为对外域名（如 `search.example.com,www.example.com`）才允许外部访问。
+- 可选访问密码 `PLATFORM_PASSWD` 也已由 compose 透传（默认空 = 不启用）；
+  启用方法见[启用访问密码](#启用访问密码可选)，公网部署建议与反代访问控制叠加使用。
 
 需要显式暴露到公网或换端口时（**强烈建议设置 `ALLOWED_HOSTS` 并配合反向代理**）：
 
@@ -139,6 +141,8 @@ docker run -d --name ai-search --restart unless-stopped --init \
 >
 > 公网/反代部署时追加：`-e ALLOWED_HOSTS=search.example.com`（逗号分隔多个域名）。
 >
+> 启用访问密码时追加：`-e PLATFORM_PASSWD='$argon2id$...'`（单引号保护 `$`，避免被 shell 展开）。
+>
 > 也可以先本地构建：`docker build -t ai-search-platform:local .`，再把镜像名替换为
 > `ai-search-platform:local`。
 >
@@ -152,7 +156,8 @@ CI 在 `main` 分支、PR 与版本 tag 上构建多架构镜像（`linux/amd64`
 构建链路：Node 24 + pnpm 11 构建前端 → Rust 1.88 release 编译并 `rust-embed` 嵌入 `dist` →
 distroless 运行时。本机冷构建约 **78 秒**（M3 Pro/arm64），CI 首次会更久、有缓存后更快。
 
-> 实测镜像体积 **44.4 MB**（44,358,553 字节，amd64；arm64 同基础镜像基本一致）。
+> 实测镜像体积**约 44.5 MB**（amd64，distroless 运行时；arm64 同基础镜像，体积基本一致）。
+> 注：同一 commit 两次构建会有数十 KB 浮动（ThinLTO 链接非确定性），属正常现象。
 > 可用 `IMAGE_TAG` 指定 compose 使用的镜像 tag，例如 `IMAGE_TAG=v0.1.0 docker compose up -d`。
 
 ### 方式三：从源码构建
@@ -173,6 +178,9 @@ make run                     # 读取 ./.env 并启动，默认 127.0.0.1:8080
 
 > 只改后端时可 `make build-backend` 快速重编（要求 `frontend/dist` 已存在）；
 > 未安装前端依赖时也能 `cargo check`，`build.rs` 会写入占位页以保证编译可用。
+
+> 可选启用访问密码：先 `printf '%s' '你的密码' | ./target/release/ai-search-platform --hash-password`
+> 生成哈希，按[启用访问密码](#启用访问密码可选)写入 `.env` 后重启。
 
 ### 方式四：下载 Release 二进制
 
@@ -205,7 +213,7 @@ make run
 
 ## ⚙️ 配置
 
-### 环境变量（4 个常规 + 1 个可选加固）
+### 环境变量（4 个常规 + 2 个可选加固）
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -214,7 +222,7 @@ make run
 | `BIND_ADDR` | 否 | `127.0.0.1:8080` | HTTP 监听地址。默认仅本机可访问。 |
 | `RUST_LOG` | 否 | `info` | tracing 日志过滤。例：`debug`、`ai_search_platform=debug,tower_http=info`。 |
 | `ALLOWED_HOSTS` | 否 | 空（不限制） | 可选的 `Host` 白名单，逗号分隔（如 `search.example.com,www.example.com`）。用于公网/反向代理部署防 DNS rebinding：绑定回环时，回环 Host 之外只放行白名单；绑定非回环时，**设置后才校验**（回环 Host 始终放行）。条目不区分大小写，忽略端口与末尾的点。 |
-| `PLATFORM_PASSWD` | 否 | 空（不启用） | **可选访问密码**，值为 Argon2id 哈希（不是明文）。设置后首页会要求输入密码，未验证无法调用 `/api/search`、`/api/fetch`。用 `./ai-search-platform --hash-password` 生成（从 stdin 读取，不留在 shell 历史）。留空 = 关闭该功能，行为与之前完全一致。 |
+| `PLATFORM_PASSWD` | 否 | 空（不启用） | **可选访问密码**，值为 **Argon2id PHC 哈希**（不是明文，形如 `$argon2id$v=19$m=19456,t=2,p=1$...`）。设置后首页显示密码框，未验证无法调用 `/api/search`、`/api/fetch`；登录换取 7 天有效 token。用 `--hash-password` 从 stdin 生成（密码 8–256 个字符）。**写入 `.env` 时必须用单引号包裹**（哈希含 `$`，会被 dotenvy 当作变量替换）；留空 = 关闭该功能，行为与之前完全一致。详见[启用访问密码](#启用访问密码可选)。 |
 
 \* **缺失 `DEEPSEEK_API_KEY` 时服务仍能启动**：`/api/health`、`/api/config` 与静态页面均正常，
 但 `/api/search` 与 `/api/fetch` 返回 `502` + `code: "upstream_not_configured"`，
@@ -231,12 +239,16 @@ make run
   若 `upstream.configured` 与预期不符，先 `env | grep DEEPSEEK` 确认当前 shell 是否已导出变量。
 - `ALLOWED_HOSTS` 只在需要 Host 白名单时设置；为空表示不启用白名单校验（本地/容器默认即可）。
   公网反向代理部署时建议设为对外域名，否则 Host 头无法校验（见 [安全](#-安全)）。
+- `PLATFORM_PASSWD` 的值是 Argon2id 哈希，含大量 `$`。**在 `.env` 中必须用单引号包裹**
+  （如 `PLATFORM_PASSWD='$argon2id$v=19$...'`），否则 dotenvy 的变量替换会把 `$argon2id`
+  展开成空串，启动时报「PLATFORM_PASSWD 非法」。通过容器 `-e`、systemd `EnvironmentFile`
+  或 shell 环境变量注入时按字面值传递，无需额外转义。
 - 真实部署建议直接注入环境变量（systemd `EnvironmentFile` / 容器 `-e` / 密钥管理服务），
   不要提交 `.env`。
 
 ### 编译期内置的默认值与限额
 
-除上述 5 个变量外，**所有参数都是编译期常量**，有意不开放运行时修改，避免误操作削弱安全边界：
+除上述 6 个变量外，**所有参数都是编译期常量**，有意不开放运行时修改，避免误操作削弱安全边界：
 
 | 项 | 值 | 说明 |
 |---|---|---|
@@ -284,6 +296,54 @@ make run
 | `ori_question` | string | 空 | 原始用户问题，供上游做查询改写/增强，最长 128 字符。 |
 | `localization` | string | 空 | 本地化位置，**必须是合法的 IPv4/IPv6 地址**（例如 `1.2.3.4`），否则返回 `400`。 |
 | `force_refresh` | boolean | `false` | 跳过缓存读取，强制回源并覆盖写入。 |
+
+### 启用访问密码（可选）
+
+默认不启用（`PLATFORM_PASSWD` 为空），行为与 0.1.0 完全一致。启用后，所有访问者共用一个密码
+（**单密码共享门禁，不是多用户账号体系**）。
+
+**1. 生成 Argon2id 哈希**（密码只走 stdin，不进入命令行参数与 shell 历史）：
+
+```bash
+# 源码构建的二进制
+printf '%s' '你的访问密码' | ./target/release/ai-search-platform --hash-password
+
+# Docker 部署：用同一镜像只生成哈希，不启动服务
+docker run --rm -i ghcr.io/shuaihaov/ai-search-platform:latest --hash-password
+# 本地 compose 也可以（--build 用当前源码构建，确保二进制支持该子命令）：
+docker compose run --rm --build ai-search --hash-password
+```
+
+> 密码长度 **8–256 个字符**；建议使用 ASCII 字符（登录接口按 UTF-8 字节长度限制 256 字节，
+> 非 ASCII 密码请自行控制总字节数）。
+> 子命令从 stdin 读取**一行**：管道输入不会被终端回显；交互式输入时终端本身可能回显，
+> 请注意遮挡屏幕。密码不会写入任何文件或日志。
+
+**2. 写入 `.env`（必须用单引号包裹）**：
+
+```dotenv
+PLATFORM_PASSWD='$argon2id$v=19$m=19456,t=2,p=1$...$...'
+```
+
+> Argon2 哈希含大量 `$`，dotenvy 会把它当作变量替换；**不加单引号会导致启动时报
+> 「PLATFORM_PASSWD 非法」**。通过容器环境变量 `-e`、systemd `EnvironmentFile` 或 shell
+> 注入时按字面值传递，不需要额外引号。
+
+**3. 重启服务**：首页会出现密码输入框；验证通过后进入搜索界面，登录状态默认保持 **7 天**
+（token 保存在浏览器 `localStorage` 的 `ai-search-platform:auth-token` 键中）。
+
+**4. 修改 / 关闭**：
+
+- 重新生成哈希并替换 `.env` 后重启 → 旧 token **全部失效**（签名密钥由哈希派生）；
+- 清空或删除 `PLATFORM_PASSWD` 后重启 → 功能关闭，直接进入搜索界面。
+
+**5. 行为细节**：
+
+- 登录接口 `POST /api/auth/login` 独立限流 **10 次/分钟/IP**，超限返回 `429 rate_limited`；
+- token 过期或无效后，下一次搜索/抓取返回 `401 unauthorized`，前端会自动回到密码框重新验证；
+- 服务端签发的是**无状态 token**：重启服务不影响已签发 token，只有改密码会使其失效；
+- 服务端没有「登出/吊销」接口：登出 = 清除浏览器 localStorage，或等待 token 过期；
+- 浏览器只保存服务端签发的 token，**不会保存你输入的明文密码**。
 
 ### URL 状态与分享
 
@@ -335,9 +395,12 @@ make run
 - 所有 `/api/*` 请求都会校验 `Host`（拒绝重复 Host、非法字符；绑定回环时只接受回环主机名）。
 - 请求体上限 **16 KiB**，超出返回 `413 payload_too_large`。
 - 请求体**拒绝未知字段**（`deny_unknown_fields`），多余字段会返回 `400 invalid_request`。
-- 本服务**默认没有多用户鉴权**：面向本机/内网或反向代理后的场景。
-  如需在公网直接暴露，建议同时：① 设置 `PLATFORM_PASSWD` 启用访问密码（单密码共享，
-  非多用户体系）；② 仍由反向代理完成 TLS 与访问控制（见 [安全](#-安全)）。
+- **鉴权（可选）**：`PLATFORM_PASSWD` 为空时无鉴权（适用于本机/内网或反代后场景）。启用后：
+  - **公开**：`GET /api/health`、`GET /api/config`、`POST /api/auth/login` 与静态资源；
+  - **受保护**：`POST /api/search`、`POST /api/fetch`，需带 `Authorization: Bearer <token>`
+    （也接受 `X-Platform-Token: <token>`，便于调试）；缺失、无效或过期返回 `401 unauthorized`；
+  - token 由登录接口签发，有效期 **7 天（604800 秒）**，服务端无状态；修改密码后全部旧 token 失效；
+  - 单密码共享不替代多用户体系，公网部署仍建议由反向代理完成 TLS 与访问控制（见 [安全](#-安全)）。
 
 ### `GET /api/health`
 
@@ -377,13 +440,43 @@ GET /api/health
     "fetch_enabled": true,
     "fetch_ttl_seconds": 86400
   },
-  "upstream": { "configured": true }
+  "upstream": { "configured": true },
+  "auth": { "enabled": false }
 }
 ```
 
-`upstream.configured` 表示是否检测到 `DEEPSEEK_API_KEY`。
+`upstream.configured` 表示是否检测到 `DEEPSEEK_API_KEY`；`auth.enabled` 表示是否启用了访问密码
+（只返回布尔值，**不泄露哈希**、不泄露 token）。
+
+### `POST /api/auth/login`
+
+访问密码**未启用**时该端点返回 `404 not_found`（不对外暴露自身）。
+
+请求（同样需要 CSRF 头与 JSON Content-Type）：
+
+```json
+{ "password": "你的访问密码" }
+```
+
+成功响应 `200`：
+
+```json
+{
+  "token": "v1.1766086400.<base64url-hmac-sha256>",
+  "expires_at": 1766086400
+}
+```
+
+- `token` 格式为 `v1.<expiry_unix>.<base64url_hmac_sha256>`，有效期 **7 天（604800 秒）**；
+  示例中的 token 为占位符，不是可用凭证；
+- 请求体只接受 `password` 字段（拒绝未知字段），密码不会写入日志或响应；
+- 错误：密码错误 → `401 invalid_password`；登录过于频繁（10 次/分钟/IP）→ `429 rate_limited`；
+- 成功响应带 `Cache-Control: no-store`。
 
 ### `POST /api/search`
+
+> 启用访问密码时，本接口需要 `Authorization: Bearer <token>`（或 `X-Platform-Token`），
+> 否则返回 `401 unauthorized`（见[通用约定](#通用约定)）。
 
 请求体（除 `query` 外均可省略）：
 
@@ -445,6 +538,9 @@ GET /api/health
 
 ### `POST /api/fetch`
 
+> 启用访问密码时同样需要 `Authorization: Bearer <token>`（或 `X-Platform-Token`），
+> 否则返回 `401 unauthorized`。
+
 请求体：
 
 ```json
@@ -497,13 +593,15 @@ GET /api/health
 | HTTP | `code` | 触发场景 |
 |---|---|---|
 | `400` | `invalid_request` | 参数缺失/越界（query 空或 >128 字符、count 不在 1–50、url 非法、未知字段等）。 |
+| `401` | `unauthorized` | 启用访问密码时，搜索/抓取缺少、无效或过期的 token。 |
+| `401` | `invalid_password` | 登录接口密码错误。 |
 | `403` | `forbidden` | 缺 `X-Requested-With`、非 JSON Content-Type、Origin 跨站、Host 校验失败、SSRF 目标（内网/回环/保留地址）。 |
 | `403` | `upstream_forbidden` | 上游返回 403。 |
-| `404` | `not_found` | 未知 API 路径（返回 JSON 错误体）。 |
+| `404` | `not_found` | 未知 API 路径；或访问密码未启用时的 `/api/auth/login`（均返回 JSON 错误体）。 |
 | `404` | `upstream_not_found` | 上游返回 404 / 页面无法获取。 |
 | `402` | `upstream_payment_required` | 上游返回 402（余额不足）。 |
 | `413` | `payload_too_large` | 请求体 > 16 KiB 或上游返回 413。 |
-| `429` | `rate_limited` | 本地限流（30 次/分钟/IP，search 与 fetch 独立计数）。 |
+| `429` | `rate_limited` | 本地限流（search/fetch 30 次/分钟/IP；登录 10 次/分钟/IP）。 |
 | `429` | `upstream_rate_limited` | 上游限流（带 `retry_after_seconds`）。 |
 | `502` | `upstream_not_configured` | 未设置 `DEEPSEEK_API_KEY`。 |
 | `502` | `upstream_auth_failed` | 上游 401（Key 无效或过期）。 |
@@ -532,6 +630,19 @@ curl -s -X POST http://127.0.0.1:8080/api/search \
   -H 'X-Requested-With: ai-search-platform' \
   -d '{"query":"Rust 异步编程","count":3}'
 
+# 启用访问密码时：先登录换取 token，再在搜索/抓取请求中携带
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: ai-search-platform' \
+  -d '{"password":"你的访问密码"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+
+curl -s -X POST http://127.0.0.1:8080/api/search \
+  -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: ai-search-platform' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"Rust 异步编程","count":3}'
+
 # 抓取网页全文
 curl -s -X POST http://127.0.0.1:8080/api/fetch \
   -H 'Content-Type: application/json' \
@@ -549,6 +660,7 @@ curl -s -X POST http://127.0.0.1:8080/api/fetch \
 ┌──────────────────────────────────────────────────────────────┐
 │                        浏览器（同源）                         │
 │   GET /                      → 嵌入的 React SPA               │
+│   POST /api/auth/login       → 访问密码 → token（可选）        │
 │   POST /api/search           → 搜索（带缓存）                 │
 │   POST /api/fetch            → 网页正文抓取（Markdown）       │
 │   GET  /api/health|/config   → 健康检查 / 非敏感配置          │
@@ -557,6 +669,7 @@ curl -s -X POST http://127.0.0.1:8080/api/fetch \
 ┌──────────────────────────▼───────────────────────────────────┐
 │                      Rust 单二进制（axum）                    │
 │  安全层     Host 校验 · CSRF 头 · Origin 同源 · CSP · 限流     │
+│             Bearer token 校验（启用访问密码时）                │
 │  校验层     query ≤128 · count 1–50 · URL 与 SSRF 过滤         │
 │  缓存层     SHA-256 键 · TTL 1 天 · 原子写 · 后台清理          │
 │  上游层     Bearer 鉴权 · 并发 8 · 重试 1 次 · 响应 ≤16 MiB    │
@@ -573,11 +686,11 @@ curl -s -X POST http://127.0.0.1:8080/api/fetch \
 
 | 层 | 技术 | 说明 |
 |---|---|---|
-| 后端语言 | Rust 1.88+（edition 2024） | release 开启 `lto="thin"`、`strip`、`panic="abort"` |
+| 后端语言 | Rust 1.88+（edition 2024） | release 开启 `lto="thin"`、`strip`；panic 由 `CatchPanicLayer` 兜底 |
 | Web 框架 | axum 0.8 + tokio + tower-http | 路由、中间件、超时、压缩、panic 兜底 |
 | 上游客户端 | reqwest（rustls，不依赖系统 OpenSSL） | 超时、重试、限体积读取；回环上游自动绕过系统代理 |
 | 静态资源 | rust-embed | release 编译期把 `frontend/dist` 嵌入二进制 |
-| 配置 | 环境变量 + `dotenvy` | 4 个常规变量 + 1 个可选加固（其余编译期常量） |
+| 配置 | 环境变量 + `dotenvy` | 4 个常规变量 + 2 个可选加固（其余编译期常量） |
 | 前端 | React 19 + Vite 8 + TypeScript 5.9 | 纯静态产物，无 Node 运行时依赖 |
 | Markdown | react-markdown 10 + remark-gfm | `skipHtml`，无 `rehype-raw`，协议白名单 |
 | 测试 | cargo test + vitest + smoke 脚本 | 单元/集成/端到端三层 |
@@ -593,7 +706,7 @@ ai-search-platform/
 ├── docker-compose.yml          # 单服务部署（只读根文件系统、命名卷、健康检查）
 ├── .github/workflows/          # CI（fmt/clippy/test/前端构建）、镜像发布、Release
 ├── README.md / LICENSE / SECURITY.md / CONTRIBUTING.md / CHANGELOG.md
-├── .env.example                # 5 个环境变量模板
+├── .env.example                # 6 个环境变量模板
 ├── src/                        # Rust 后端
 │   ├── main.rs                 # 启动：dotenv → tracing → Config → serve
 │   ├── lib.rs                  # Router 组装（中间件层序）
@@ -657,8 +770,8 @@ ai-search-platform/
 | **SSRF** | `/api/fetch` 只接受 `http/https`，拒绝 URL 内嵌凭据；拦截回环、私有网段、链路本地（含 `169.254.169.254` 云元数据）、CGNAT、ULA、IPv4-mapped IPv6 等，命中返回 `403`；上游客户端**不跟随重定向**。 |
 | **限流** | 每 IP 每分钟 **30 次**，search 与 fetch 独立计数；客户端 IP 仅在直连对端为回环（同机反代）时才信任 `X-Forwarded-For`。 |
 | **资源耗尽** | 请求体 ≤ 16 KiB；上游响应 ≤ 16 MiB；上游并发 ≤ 8；上游超时 30 秒、整请求 90 秒；query ≤ 128 字符；错误 `message` 截断。 |
-| **访问控制（可选）** | 设置 `PLATFORM_PASSWD` 后启用访问密码：密码以 Argon2id 哈希配置，登录换取 7 天有效的 HMAC 签名 token（`v1.<expiry>.<sig>`，密钥由哈希派生，改密码即全部失效），仅保存在浏览器 localStorage，不落 URL/日志；登录接口独立限流 10 次/分钟/IP 防爆破。**未设置时该功能完全惰性**。 |
-| **信息泄露** | `/api/config` 只暴露非敏感项；错误信息不透出内部路径；API Key 在 `Debug` 输出中固定脱敏；`.env`、`.cache`、`target`、`frontend/dist` 均在 `.gitignore`。 |
+| **访问控制（可选）** | 设置 `PLATFORM_PASSWD` 后启用访问密码：只存 **Argon2id PHC 哈希**（非明文，启动时校验格式，非法即拒绝启动），登录用常量时间校验；成功后签发 **7 天有效**的无状态 token（`v1.<expiry>.<sig>`，HMAC-SHA256，密钥由哈希派生，改密码即全部失效）；token 仅保存在浏览器 localStorage，不落 URL/日志；登录接口独立限流 **10 次/分钟/IP** 防爆破；不使用 Cookie，CSRF 暴露面不变。**未设置时该功能完全惰性**。 |
+| **信息泄露** | `/api/config` 只暴露非敏感项（`auth.enabled` 仅布尔值）；错误信息不透出内部路径；API Key 与密码哈希在 `Config` 的 `Debug` 输出中固定脱敏；`.env`、`.cache`、`target`、`frontend/dist` 均在 `.gitignore`。 |
 | **panic 隔离** | `CatchPanicLayer` 把 handler panic 转成 `500`，进程保持存活继续服务（release profile 未启用 `panic = "abort"`）。 |
 
 安全漏洞的私密报告流程见 [SECURITY.md](SECURITY.md)。
@@ -666,14 +779,16 @@ ai-search-platform/
 ### 反向代理与生产部署
 
 > ⚠️ **不要直接把本服务暴露到公网。** 默认 `BIND_ADDR=127.0.0.1:8080` 是有意为之；
-> 本服务**没有多用户鉴权**。
+> 本服务默认无鉴权，可选的 `PLATFORM_PASSWD` 只是**单密码共享门禁**，不替代反向代理的
+> TLS 与访问控制。
 
 1. **在 TLS 反向代理之后运行**（Caddy / nginx / Traefik），由反代终止 HTTPS：
    - 反代把请求代理到 `127.0.0.1:8080`（或容器端口）；
    - 保持 `Host` 为对外的真实域名，并设置 `ALLOWED_HOSTS=<对外域名>`：
      绑定回环时非回环 Host 默认会被拒绝，白名单是「反代保持真实域名」场景的必要配置；
    - 反代与后端同机时，限流会正确识别 `X-Forwarded-For`。
-2. **在反代层加访问控制**：Basic Auth / OAuth2 Proxy / mTLS / IP 白名单任选其一。
+2. **在反代层加访问控制**：Basic Auth / OAuth2 Proxy / mTLS / IP 白名单任选其一；
+   也可以同时启用应用内访问密码（`PLATFORM_PASSWD`）作为第二层，适合没有反代鉴权的内网场景。
    应用自身没有 HTTP 头部/请求体读取超时（仅限制解析完成后的处理时长 90s），
    因此**裸奔在公网时存在 slowloris 风险**，请务必在反代配置读写超时，例如：
    - nginx：`client_header_timeout 10s; client_body_timeout 10s;`
@@ -711,7 +826,8 @@ WantedBy=multi-user.target
 
 1. **单实例**：缓存是本地目录，没有分布式锁与共享；多副本部署时各副本独立缓存、
    不共享限流计数。
-2. **无多用户鉴权**：没有账号体系、API Token 签发或按用户配额；公网部署必须依赖反向代理。
+2. **单密码共享，非多用户体系**：启用 `PLATFORM_PASSWD` 后所有访问者共用一个密码，
+   没有账号、角色、按用户配额或审计日志；公网部署仍需反向代理访问控制。
 3. **`need_content: true` 响应更大但计费不变**：默认返回全文使响应体显著变大
    （受 16 MiB 上游上限与 8 MiB 单条缓存上限约束），带宽敏感场景可显式传 `need_content: false`。
 4. **Base64 不是加密**：URL 里的 `?s=` 可被任何人解码，等同于明文关键词。
@@ -722,6 +838,10 @@ WantedBy=multi-user.target
 9. **Host 白名单依赖部署拓扑**：反向代理保持真实域名时，`BIND_ADDR` 绑定回环也必须设置
    `ALLOWED_HOSTS`，否则请求会因 Host 校验返回 `403`；绑定非回环且未设置白名单时不做白名单校验
    （启动日志会告警）。
+10. **token 存储在浏览器 localStorage**：CSP（无 `unsafe-inline`）与前端渲染防护已降低 XSS 风险，
+    但一旦发生 XSS，token 可被读取（有效期最长 7 天）；修改密码可立即使全部 token 失效。
+11. **无服务端登出/吊销接口**：token 是无状态的，只能等过期或修改 `PLATFORM_PASSWD` 使全部失效；
+    登录限流是进程内固定窗口，重启清零、多副本不共享。
 
 ---
 
@@ -839,6 +959,10 @@ CSRF 拒绝、安全响应头、404 JSON、缓存文件名不含明文关键词�
 | 二次请求仍回源 | 两次请求体不完全一致（`force_refresh`、`count`、`need_content` 等均进键）；确认是同一 CWD 的缓存目录 |
 | 页面是「前端尚未构建」占位页 | debug 构建且 `frontend/dist` 只有占位页；执行 `make frontend` 后重启 |
 | 页面样式丢失 / 资源 404 | release 二进制嵌入的是构建时的 `dist`；前端改动后必须重新构建后端 |
+| 启动报「PLATFORM_PASSWD 必须是以 `$argon2id$` 开头…」 | `.env` 中哈希未加单引号被 dotenvy 展开，或误填了明文；用 `--hash-password` 重新生成，并以 `PLATFORM_PASSWD='$argon2id$...'` 写入 |
+| 首页一直停在密码框 / 搜索返回 `401 unauthorized` | token 已过期或密码已更换；重新输入密码即可。若确认密码正确仍失败，检查服务端 `/api/config` 的 `auth.enabled` |
+| 登录返回 `429 rate_limited` | 登录限流 10 次/分钟/IP；按 `retry_after_seconds` / `Retry-After` 等待后重试 |
+| 忘记访问密码 | Argon2 哈希不可逆；重新执行 `--hash-password` 生成新哈希替换后重启（旧 token 全部失效） |
 | 需要进入容器排障 | 运行镜像是 distroless，但内置 busybox applet：`docker exec -it ai-search sh` 即可获得 sh/ls/cat/grep 等常用命令 |
 
 ### 验收相关

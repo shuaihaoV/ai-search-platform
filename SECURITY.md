@@ -3,7 +3,8 @@
 感谢你帮助让 **AI 搜索平台**（ai-search-platform）更安全。
 
 本项目是一个会代理外部搜索/抓取请求、并在本地落盘缓存的自托管 Web 服务，
-安全边界清晰但并非「零信任」：它**没有多用户鉴权**，默认只监听回环地址，
+安全边界清晰但并非「零信任」：它**默认无鉴权**，可选启用**单密码访问门禁**
+（`PLATFORM_PASSWD`，非多用户账号体系）；默认只监听回环地址，
 公网部署必须依赖反向代理完成 TLS 与访问控制。请在评估时把这一点考虑在内。
 
 ---
@@ -36,7 +37,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| 漏洞类型 | 例如 CSRF 绕过、SSRF、路径穿越、XSS、DoS、密钥泄露 |
+| 漏洞类型 | 例如 CSRF 绕过、SSRF、路径穿越、XSS、DoS、密钥泄露、鉴权绕过/Token 伪造、登录限流绕过 |
 | 影响版本 | 版本号 / commit SHA / 容器镜像 tag |
 | 部署形态 | 直连（`BIND_ADDR` 回环）还是反向代理后；是否 Docker |
 | 复现步骤 | 最小可复现步骤，附请求/响应原文（`curl -v` 输出） |
@@ -71,8 +72,12 @@
   绑定回环时非回环 Host 只有命中白名单才放行（因此反代保持真实域名时必须设置）；
   绑定非回环时，设置后才强制校验（回环 Host 始终放行，保证同机健康检查可用）。
   未设置且绑定非回环时，启动日志会告警「Host 头无法校验」。
-- **无内置鉴权**：没有账号体系、API Token 或按用户配额。公网部署请使用反向代理的
-  Basic Auth / OAuth2 Proxy / mTLS / IP 白名单。
+- **可选访问密码（单密码共享）**：设置 `PLATFORM_PASSWD`（Argon2id PHC 哈希，非明文）后，
+  `POST /api/search`、`POST /api/fetch` 需要 `Authorization: Bearer <token>`
+  （或 `X-Platform-Token`）；`/api/health`、`/api/config`、`/api/auth/login` 保持公开。
+  登录接口独立限流 10 次/分钟/IP；token 为无状态 HMAC 签名、有效期 7 天，
+  改密码使全部旧 token 失效。**未设置时该功能完全惰性**；这是单密码共享门禁，
+  没有账号/角色/配额，公网仍应叠加反向代理访问控制。
 - **CSRF 防护**：所有 `POST /api/*` 必须同时满足自定义头 `X-Requested-With:
   ai-search-platform`、`Content-Type: application/json`、同源 `Origin`（若存在）、
   `Sec-Fetch-Site` 为 `same-origin`/`none`（若存在）。
@@ -82,7 +87,8 @@
 - **资源上限**：请求体 ≤ 16 KiB，上游响应 ≤ 16 MiB，上游并发 ≤ 8，上游超时 30 s，
   整请求超时 90 s，每 IP 每分钟 30 次（search/fetch 独立计数）。
 - **密钥处理**：`DEEPSEEK_API_KEY` 只用于向上游发送 `Authorization: Bearer`，不会出现在
-  `/api/config`、日志或错误响应中（`Config` 的 `Debug` 实现固定脱敏）。
+  `/api/config`、日志或错误响应中；`PLATFORM_PASSWD` 的哈希同样在 `Config` 的 `Debug`
+  输出中固定脱敏，`/api/config` 只返回 `auth.enabled` 布尔值。
 - **缓存**：仅保存上游返回的公开网页/搜索结果数据（不含 API Key、请求头），
   文件权限 `0600`、目录 `0700`；缓存键为 SHA-256，关键词以 Base64URL 折入键中，
   **文件名不含明文关键词**。
@@ -103,6 +109,8 @@
 ## 部署者加固建议
 
 - 永远不要把本服务直接暴露到公网；前面放 TLS 反向代理并启用访问控制。
+- 需要应用层门禁时启用 `PLATFORM_PASSWD`（单密码共享）；`.env` 中的 Argon2 哈希
+  **必须用单引号包裹**，否则 dotenvy 会展开 `$` 导致启动失败。
 - 反向代理必须保留正确的 `Host`（对外的真实域名），并设置 `ALLOWED_HOSTS=<对外域名>`；
   同机反代时客户端 IP 通过 `X-Forwarded-For` 识别（仅对回环对端生效）。
 - 通过环境变量或 `EnvironmentFile` 注入密钥，不要把 `.env` 提交到仓库。

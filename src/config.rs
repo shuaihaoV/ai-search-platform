@@ -65,20 +65,29 @@ pub const MAX_CONCURRENT_UPSTREAM: usize = 8;
 /// Per-client-IP requests per minute, applied separately to search and fetch.
 pub const RATE_LIMIT_PER_MINUTE: u32 = 30;
 
-/// Default value for the upstream `count` field.
-///
-/// Set to the upstream maximum (50): billing is per request, not per result,
-/// so a larger `count` costs the same while returning a fuller first page.
 /// Optional access password: Argon2id PHC hash, never the plaintext.
 pub const PLATFORM_PASSWD_ENV: &str = "PLATFORM_PASSWD";
 /// Access-token lifetime (7 days).
 pub const AUTH_TOKEN_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
 /// Login attempts allowed per client IP per minute (brute-force brake).
 pub const AUTH_LOGIN_LIMIT_PER_MINUTE: u32 = 10;
-/// Accepted password length range for the `hash-password` subcommand.
+/// Maximum concurrent Argon2id verifications.
+///
+/// One verification needs ~19 MiB (`m=19456` KiB) and a full core for a few
+/// milliseconds, so unbounded concurrency is both a memory and a latency
+/// threat for the whole process.
+pub const AUTH_LOGIN_MAX_CONCURRENT: usize = 4;
+/// How long a login attempt may wait for a verification slot before it is
+/// rejected with a retryable 429 instead of piling up.
+pub const AUTH_LOGIN_QUEUE_TIMEOUT_SECONDS: u64 = 2;
+/// Accepted password length range for the `hash-password` subcommand and login.
 pub const AUTH_PASSWORD_MIN_CHARS: usize = 8;
 pub const AUTH_PASSWORD_MAX_CHARS: usize = 256;
 
+/// Default value for the upstream `count` field.
+///
+/// Set to the upstream maximum (50): billing is per request, not per result,
+/// so a larger `count` costs the same while returning a fuller first page.
 pub const DEFAULT_COUNT: u32 = 50;
 pub const COUNT_MIN: u32 = 1;
 pub const COUNT_MAX: u32 = 50;
@@ -514,6 +523,28 @@ mod tests {
         let rendered = format!("{cfg:?}");
         assert!(!rendered.contains("sk-super-secret"));
         assert!(rendered.contains("redacted"));
+    }
+
+    #[test]
+    fn debug_never_leaks_password_hash() {
+        // The Argon2 PHC string doubles as the token-signing secret: anyone who
+        // sees it can forge bearer tokens, so it must never be rendered.
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNo";
+        let cfg = Config::new(
+            Some("k".into()),
+            parse_base_url(DEFAULT_BASE_URL).unwrap(),
+            DEFAULT_BIND_ADDR.parse().unwrap(),
+            PathBuf::from(".cache"),
+        )
+        .with_platform_passwd(Some(hash.to_owned()));
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("argon2"), "hash leaked: {rendered}");
+        assert!(
+            !rendered.contains("aGFzaGhhc2hoYXNo"),
+            "hash leaked: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+        assert!(cfg.auth_enabled());
     }
 
     #[test]

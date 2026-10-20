@@ -7,15 +7,31 @@
 
 ## [Unreleased]
 
-## [Unreleased]
-
 ### 新增
 
-- **可选访问密码**（`PLATFORM_PASSWD`）：设置后打开首页需输入密码，未通过验证
-  无法调用 `/api/search`、`/api/fetch`。密码以 **Argon2id 哈希**配置（非明文），
-  通过 `--hash-password` 子命令从 stdin 生成；登录换取 7 天有效的 HMAC 签名
-  token，仅存于浏览器 localStorage；登录接口独立限流 10 次/分钟/IP。
-  未设置该变量时功能完全惰性，行为与 0.1.0 一致。
+- **可选访问密码（`PLATFORM_PASSWD`）**：设置后首页显示密码门禁，未通过验证无法调用
+  `POST /api/search`、`POST /api/fetch`；未设置时功能完全惰性，行为与 0.1.0 一致。
+  - 访问密码以 **Argon2id PHC 哈希**配置（非明文）；新增 `--hash-password` /
+    `hash-password` 子命令，从 stdin 读取密码（8–256 个字符）并输出哈希。
+  - 新增 `POST /api/auth/login`：校验密码后签发 **7 天（604800 秒）**有效的无状态 token
+    （`v1.<expiry>.<base64url(HMAC-SHA256)>`，签名密钥由密码哈希派生，改密码后旧 token
+    全部失效）；登录接口独立限流 **10 次/分钟/IP**。
+  - `GET /api/config` 新增 `auth.enabled` 字段（仅布尔值，不泄露哈希或 token）。
+  - 前端新增密码门禁界面（PasswordGate）：未验证前不渲染搜索框；token 存于
+    `localStorage`（`ai-search-platform:auth-token`），过期/失效时自动回到门禁并提示。
+  - `docker-compose.yml` 透传 `PLATFORM_PASSWD`；`.env` 中的哈希必须用单引号包裹，
+    避免 dotenvy 把 `$argon2id` 当作变量替换（`.env.example` 已注明）。
+
+### 安全
+
+- 密码使用 Argon2 校验（常量时间）；token 使用 HMAC-SHA256 + 常量时间比较；服务端不保存会话；
+  `PLATFORM_PASSWD` 在 `Config` 的 `Debug` 输出中脱敏；非法哈希在启动时直接失败
+  （不静默降级为无密码）；登录限流独立于搜索/抓取。
+
+### 文档
+
+- README 新增「启用访问密码」使用指南、`POST /api/auth/login` API 文档与鉴权错误码，
+  并补充单密码共享、token localStorage 等已知限制。
 
 ## [0.1.0] - 2026-10-19
 

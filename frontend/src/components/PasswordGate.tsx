@@ -9,7 +9,7 @@
  * - localStorage 仅保存服务端签发的 token。
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactElement, RefObject } from 'react';
 import { LockIcon } from './Icons';
 
@@ -30,7 +30,6 @@ export function PasswordGate({
   notice = null,
 }: PasswordGateProps): ReactElement {
   const [password, setPassword] = useState('');
-  const formRef = useRef<HTMLFormElement | null>(null);
 
   // 进入门禁即聚焦，减少一次点击
   useEffect(() => {
@@ -57,7 +56,6 @@ export function PasswordGate({
       </p>
 
       <form
-        ref={formRef}
         className="search-form"
         onSubmit={(event) => {
           event.preventDefault();

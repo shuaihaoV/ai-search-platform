@@ -99,6 +99,12 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     if !config.is_upstream_configured() {
         tracing::warn!("未设置 DEEPSEEK_API_KEY：搜索与抓取接口将返回 502");
     }
+    if config.auth_enabled() {
+        tracing::warn!(
+            token_ttl_seconds = ai_search_platform::config::AUTH_TOKEN_TTL_SECONDS,
+            "已启用访问密码：/api/search 与 /api/fetch 需要 Bearer token"
+        );
+    }
 
     let cache = std::sync::Arc::new(Cache::new(config.cache_dir())?);
     tracing::info!(dir = %cache.root().display(), "缓存目录就绪");
@@ -195,12 +201,28 @@ async fn shutdown_signal() {
     tracing::info!("收到退出信号，正在优雅关闭");
 }
 
+/// Format the copy-pasteable `.env` line for a freshly generated hash.
+///
+/// The value is wrapped in single quotes: a PHC string contains `$`, and
+/// `dotenvy` performs variable substitution on unquoted values, which would
+/// turn `$argon2id$v=19$m=...` into garbage and make the next start fail with
+/// "PLATFORM_PASSWD 不是合法的 Argon2id 哈希". Single quotes keep the value
+/// literal in `.env` files as well as in POSIX shells.
+fn passwd_env_hint(hash: &str) -> String {
+    format!("PLATFORM_PASSWD='{hash}'")
+}
+
 /// Read a password from stdin and print its Argon2id hash.
 fn hash_password_command() -> ExitCode {
     use std::io::{BufRead, Write};
 
+    // stdin echo cannot be disabled without termios (or another crate), so be
+    // honest instead of promising "不回显". Piping the password in
+    // (`printf '%s' '密码' | --hash-password`) keeps it off the terminal and out
+    // of shell history either way.
     eprintln!(
-        "请输入访问密码（输入不回显；长度 {}-{}）：",
+        "请输入访问密码（注意：输入内容会显示在此终端；长度 {}-{} 个字符；\
+         也可用 `printf '%s' '密码' | --hash-password` 避免回显）：",
         ai_search_platform::config::AUTH_PASSWORD_MIN_CHARS,
         ai_search_platform::config::AUTH_PASSWORD_MAX_CHARS
     );
@@ -227,17 +249,38 @@ fn hash_password_command() -> ExitCode {
 
     match ai_search_platform::auth::hash_password(password) {
         Ok(hash) => {
+            // stdout keeps the bare hash so scripts can capture it; the
+            // human-facing hint is quoted for direct `.env` use.
             if let Err(err) = writeln!(std::io::stdout(), "{hash}") {
                 eprintln!("输出失败: {}", err.kind());
                 return ExitCode::FAILURE;
             }
             eprintln!("\n把下面这行写入 .env（或容器环境变量）：");
-            eprintln!("PLATFORM_PASSWD={hash}");
+            eprintln!("{}", passwd_env_hint(&hash));
+            eprintln!(
+                "（哈希中的 `$` 必须用单引号保护，否则 dotenvy 会把它当作变量展开，\
+                 导致下次启动报 PLATFORM_PASSWD 非法）"
+            );
             ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("生成哈希失败: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_hint_is_single_quoted() {
+        // The hint must survive `dotenvy` variable expansion on the next start.
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
+        let hint = passwd_env_hint(hash);
+        assert_eq!(hint, format!("PLATFORM_PASSWD='{hash}'"));
+        assert!(hint.starts_with("PLATFORM_PASSWD='$argon2id$"));
+        assert!(hint.ends_with('\''));
     }
 }
