@@ -186,6 +186,21 @@ async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
     (status, value)
 }
 
+/// Send with an explicit socket peer so a test can pin one rate-limit bucket.
+async fn send_pinned(app: &Router, request: Request<Body>, peer: &str) -> (StatusCode, Value) {
+    let addr: SocketAddr = peer.parse().unwrap();
+    let mut request = request;
+    request
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(addr));
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()));
+    (status, value)
+}
+
 fn search_request(query: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -968,4 +983,192 @@ async fn oversized_request_body_is_rejected() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(body["error"]["code"], "payload_too_large");
     assert!(mock.search_calls.lock().unwrap().is_empty());
+}
+
+// ===========================================================================
+// Optional access password (PLATFORM_PASSWD)
+// ===========================================================================
+
+/// Boot the app with the access gate enabled and return the password used.
+async fn start_app_with_auth(upstream: &str, cache_dir: PathBuf, password: &str) -> Router {
+    let bind: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let hash = ai_search_platform::auth::hash_password(password).expect("hash");
+    let config = Config::new(
+        Some("test-key".into()),
+        ai_search_platform::config::parse_base_url(upstream).unwrap(),
+        bind,
+        cache_dir,
+    )
+    .with_platform_passwd(Some(hash));
+    let cache = Arc::new(Cache::new(config.cache_dir()).unwrap());
+    let client = UpstreamClient::new(&config).unwrap();
+    let state = AppState::new(config, client, cache);
+    ai_search_platform::build_app(state)
+}
+
+fn login_request(password: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/auth/login")
+        .header("host", "localhost:8080")
+        .header("content-type", "application/json")
+        .header("x-requested-with", "ai-search-platform")
+        .body(Body::from(
+            serde_json::json!({ "password": password }).to_string(),
+        ))
+        .unwrap()
+}
+
+fn search_request_with_token(query: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/search")
+        .header("host", "localhost:8080")
+        .header("content-type", "application/json")
+        .header("x-requested-with", "ai-search-platform")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            serde_json::json!({ "query": query }).to_string(),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn auth_gate_reports_enabled_in_config() {
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/config")
+        .header("host", "localhost:8080")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["auth"]["enabled"], true);
+    // The hash must never be exposed.
+    let text = body.to_string();
+    assert!(!text.contains("argon2"), "config leaked the password hash");
+}
+
+#[tokio::test]
+async fn auth_gate_blocks_search_and_fetch_without_token() {
+    let (upstream, mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    let (status, body) = send(&app, search_request("blocked query")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "unauthorized");
+
+    let fetch = Request::builder()
+        .method("POST")
+        .uri("/api/fetch")
+        .header("host", "localhost:8080")
+        .header("content-type", "application/json")
+        .header("x-requested-with", "ai-search-platform")
+        .body(Body::from(
+            serde_json::json!({ "url": "https://example.com/a" }).to_string(),
+        ))
+        .unwrap();
+    let (status, body) = send(&app, fetch).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "unauthorized");
+
+    // Neither request may reach the upstream.
+    assert_eq!(mock.search_calls.lock().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn auth_login_rejects_wrong_password_and_accepts_correct_one() {
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    let (status, body) = send(&app, login_request("wrong")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"]["code"], "invalid_password");
+
+    let (status, body) = send(&app, login_request("s3cret-passphrase")).await;
+    assert_eq!(status, StatusCode::OK);
+    let token = body["token"].as_str().expect("token").to_owned();
+    assert!(token.starts_with("v1."), "unexpected token: {token}");
+    assert!(body["expires_at"].as_i64().unwrap_or(0) > 0);
+
+    // The freshly issued token unlocks the expensive endpoints.
+    let (status, _body) = send(&app, search_request_with_token("allowed query", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_rejects_tampered_or_malformed_tokens() {
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    let (_, body) = send(&app, login_request("s3cret-passphrase")).await;
+    let token = body["token"].as_str().unwrap().to_owned();
+
+    for bad in [
+        format!("{token}x"),
+        token.replace("v1.", "v2."),
+        String::new(),
+        "garbage".to_owned(),
+    ] {
+        let (status, body) = send(&app, search_request_with_token("q", &bad)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "token {bad:?} should be rejected"
+        );
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+}
+
+#[tokio::test]
+async fn auth_login_endpoint_is_absent_when_gate_disabled() {
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (app, _cache) = start_app(&upstream, dir.path().to_path_buf()).await;
+
+    let (status, body) = send(&app, login_request("anything")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "not_found");
+
+    // And search keeps working without any token, exactly like before.
+    let (status, _body) = send(&app, search_request("no auth needed")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn auth_ignores_xff_for_login_rate_limit() {
+    // The login limiter must key on the trusted peer, not a spoofable header.
+    let (upstream, _mock) = start_mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = start_app_with_auth(&upstream, dir.path().to_path_buf(), "s3cret-passphrase").await;
+
+    let limit = ai_search_platform::config::AUTH_LOGIN_LIMIT_PER_MINUTE as usize;
+    let mut saw_rate_limit = false;
+    for index in 0..(limit + 3) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("host", "localhost:8080")
+            .header("content-type", "application/json")
+            .header("x-requested-with", "ai-search-platform")
+            .header("x-forwarded-for", format!("203.0.113.{index}"))
+            .body(Body::from(
+                serde_json::json!({ "password": "wrong" }).to_string(),
+            ))
+            .unwrap();
+        // All requests share one peer address, so the bucket must fill up.
+        let (status, _body) = send_pinned(&app, request, "198.51.100.9:1234").await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            saw_rate_limit = true;
+            break;
+        }
+    }
+    assert!(saw_rate_limit, "login rate limit never triggered");
 }

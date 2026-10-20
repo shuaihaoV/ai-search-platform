@@ -16,5 +16,8 @@ pub async fn health() -> Json<HealthResponse> {
 
 /// Non-sensitive runtime configuration for the frontend.
 pub async fn config(State(state): State<AppState>) -> Json<PublicConfig> {
-    Json(PublicConfig::new(state.config().is_upstream_configured()))
+    Json(PublicConfig::new(
+        state.config().is_upstream_configured(),
+        state.config().auth_enabled(),
+    ))
 }

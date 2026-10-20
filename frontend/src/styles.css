@@ -3176,3 +3176,32 @@ html:has(body.modal-open) {
     height: var(--tap-size);
   }
 }
+
+/* ---------- 访问密码门禁 ---------- */
+.password-gate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.password-gate-title {
+  font-size: clamp(20px, 3vw, 26px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+.password-gate-desc {
+  margin-bottom: var(--space-3);
+  color: var(--text-muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.password-gate-error,
+.password-gate-notice {
+  padding-inline: var(--space-2);
+  text-align: center;
+}

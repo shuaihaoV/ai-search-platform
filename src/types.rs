@@ -123,6 +123,13 @@ pub struct PublicConfig {
     pub limits: PublicLimits,
     pub cache: PublicCache,
     pub upstream: PublicUpstream,
+    pub auth: PublicAuth,
+}
+
+/// Whether the optional access password is enabled. Never leaks the hash.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PublicAuth {
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,7 +163,7 @@ pub struct PublicUpstream {
 }
 
 impl PublicConfig {
-    pub fn new(upstream_configured: bool) -> Self {
+    pub fn new(upstream_configured: bool, auth_enabled: bool) -> Self {
         Self {
             version: config::VERSION,
             defaults: PublicDefaults {
@@ -180,6 +187,9 @@ impl PublicConfig {
             },
             upstream: PublicUpstream {
                 configured: upstream_configured,
+            },
+            auth: PublicAuth {
+                enabled: auth_enabled,
             },
         }
     }

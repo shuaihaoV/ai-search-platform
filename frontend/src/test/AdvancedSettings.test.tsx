@@ -60,6 +60,7 @@ describe('AdvancedSettings', () => {
           fetch_ttl_seconds: 86_400,
         },
         upstream: { configured: true },
+        auth: { enabled: false },
       }),
     );
     expect(html).toContain('默认 20');

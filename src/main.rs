@@ -12,6 +12,18 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // `--hash-password` / `hash-password`: turn a plaintext password from stdin
+    // into the Argon2id hash expected by `PLATFORM_PASSWD`. Reading from stdin
+    // (not argv) keeps the password out of shell history and `ps` output.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() == 1 && matches!(args[0].as_str(), "--hash-password" | "hash-password") {
+        return hash_password_command();
+    }
+    if !args.is_empty() {
+        eprintln!("未知参数；用法: ai-search-platform [--hash-password]");
+        return ExitCode::from(2);
+    }
+
     // `.env` is optional: real deployments usually inject env vars directly.
     //
     // Only the file next to the working directory is consulted. `dotenvy::dotenv()`
@@ -181,4 +193,51 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("收到退出信号，正在优雅关闭");
+}
+
+/// Read a password from stdin and print its Argon2id hash.
+fn hash_password_command() -> ExitCode {
+    use std::io::{BufRead, Write};
+
+    eprintln!(
+        "请输入访问密码（输入不回显；长度 {}-{}）：",
+        ai_search_platform::config::AUTH_PASSWORD_MIN_CHARS,
+        ai_search_platform::config::AUTH_PASSWORD_MAX_CHARS
+    );
+    let mut line = String::new();
+    let stdin = std::io::stdin();
+    if let Err(err) = stdin.lock().read_line(&mut line) {
+        eprintln!("读取输入失败: {}", err.kind());
+        return ExitCode::FAILURE;
+    }
+    let password = line.trim_end_matches(['\r', '\n']);
+    let chars = password.chars().count();
+    if !(ai_search_platform::config::AUTH_PASSWORD_MIN_CHARS
+        ..=ai_search_platform::config::AUTH_PASSWORD_MAX_CHARS)
+        .contains(&chars)
+    {
+        eprintln!(
+            "密码长度必须在 {}-{} 个字符之间（当前 {}）",
+            ai_search_platform::config::AUTH_PASSWORD_MIN_CHARS,
+            ai_search_platform::config::AUTH_PASSWORD_MAX_CHARS,
+            chars
+        );
+        return ExitCode::FAILURE;
+    }
+
+    match ai_search_platform::auth::hash_password(password) {
+        Ok(hash) => {
+            if let Err(err) = writeln!(std::io::stdout(), "{hash}") {
+                eprintln!("输出失败: {}", err.kind());
+                return ExitCode::FAILURE;
+            }
+            eprintln!("\n把下面这行写入 .env（或容器环境变量）：");
+            eprintln!("PLATFORM_PASSWD={hash}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("生成哈希失败: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }

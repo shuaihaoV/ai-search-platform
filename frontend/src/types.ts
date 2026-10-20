@@ -48,6 +48,12 @@ export interface AppConfig {
   limits: AppLimits;
   cache: CacheConfig;
   upstream: UpstreamConfig;
+  /** 访问密码门禁状态 */
+  auth: AuthConfig;
+}
+
+export interface AuthConfig {
+  enabled: boolean;
 }
 
 /** POST /api/search 请求体 */

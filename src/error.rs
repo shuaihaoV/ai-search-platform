@@ -13,6 +13,8 @@ use serde::Serialize;
 pub enum ErrorCode {
     InvalidRequest,
     Forbidden,
+    Unauthorized,
+    InvalidPassword,
     NotFound,
     PayloadTooLarge,
     RateLimited,
@@ -33,6 +35,8 @@ impl ErrorCode {
         match self {
             Self::InvalidRequest => "invalid_request",
             Self::Forbidden => "forbidden",
+            Self::Unauthorized => "unauthorized",
+            Self::InvalidPassword => "invalid_password",
             Self::NotFound => "not_found",
             Self::PayloadTooLarge => "payload_too_large",
             Self::RateLimited => "rate_limited",
@@ -53,6 +57,7 @@ impl ErrorCode {
         match self {
             Self::InvalidRequest => StatusCode::BAD_REQUEST,
             Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Unauthorized | Self::InvalidPassword => StatusCode::UNAUTHORIZED,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::RateLimited | Self::UpstreamRateLimited => StatusCode::TOO_MANY_REQUESTS,
@@ -106,6 +111,14 @@ impl AppError {
 
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Forbidden, message)
+    }
+
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::Unauthorized, message)
+    }
+
+    pub fn invalid_password(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidPassword, message)
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {

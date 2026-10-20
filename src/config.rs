@@ -69,6 +69,16 @@ pub const RATE_LIMIT_PER_MINUTE: u32 = 30;
 ///
 /// Set to the upstream maximum (50): billing is per request, not per result,
 /// so a larger `count` costs the same while returning a fuller first page.
+/// Optional access password: Argon2id PHC hash, never the plaintext.
+pub const PLATFORM_PASSWD_ENV: &str = "PLATFORM_PASSWD";
+/// Access-token lifetime (7 days).
+pub const AUTH_TOKEN_TTL_SECONDS: i64 = 7 * 24 * 60 * 60;
+/// Login attempts allowed per client IP per minute (brute-force brake).
+pub const AUTH_LOGIN_LIMIT_PER_MINUTE: u32 = 10;
+/// Accepted password length range for the `hash-password` subcommand.
+pub const AUTH_PASSWORD_MIN_CHARS: usize = 8;
+pub const AUTH_PASSWORD_MAX_CHARS: usize = 256;
+
 pub const DEFAULT_COUNT: u32 = 50;
 pub const COUNT_MIN: u32 = 1;
 pub const COUNT_MAX: u32 = 50;
@@ -99,6 +109,10 @@ pub enum ConfigError {
     BaseUrl(String),
     #[error("BIND_ADDR 非法: {0}")]
     BindAddr(String),
+    #[error(
+        "PLATFORM_PASSWD 必须是以 $argon2id$ 开头的 Argon2id 哈希（可用 `--hash-password` 生成）"
+    )]
+    PlatformPasswd,
 }
 
 /// Runtime configuration derived from the environment.
@@ -110,6 +124,8 @@ pub struct Config {
     cache_dir: PathBuf,
     loopback_bind: bool,
     allowed_hosts: Vec<String>,
+    /// Argon2id hash of the optional access password.
+    platform_passwd: Option<String>,
 }
 
 impl fmt::Debug for Config {
@@ -122,6 +138,10 @@ impl fmt::Debug for Config {
             .field("cache_dir", &self.cache_dir)
             .field("loopback_bind", &self.loopback_bind)
             .field("allowed_hosts", &self.allowed_hosts)
+            .field(
+                "platform_passwd",
+                &self.platform_passwd.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -158,6 +178,21 @@ impl Config {
             .map(|raw| parse_allowed_hosts(&raw))
             .unwrap_or_default();
 
+        // A malformed password hash must abort startup: silently falling back
+        // to "no password" would be a security downgrade.
+        let platform_passwd = match std::env::var(PLATFORM_PASSWD_ENV)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+        {
+            Some(raw) => {
+                crate::auth::validate_password_hash(&raw)
+                    .map_err(|_| ConfigError::PlatformPasswd)?;
+                Some(raw)
+            }
+            None => None,
+        };
+
         Ok(Self {
             api_key,
             base_url,
@@ -165,6 +200,7 @@ impl Config {
             cache_dir: PathBuf::from(CACHE_DIR),
             loopback_bind,
             allowed_hosts,
+            platform_passwd,
         })
     }
 
@@ -183,7 +219,14 @@ impl Config {
             cache_dir,
             loopback_bind,
             allowed_hosts: Vec::new(),
+            platform_passwd: None,
         }
+    }
+
+    /// Attach an Argon2id password hash, enabling the access gate.
+    pub fn with_platform_passwd(mut self, hash: Option<String>) -> Self {
+        self.platform_passwd = hash;
+        self
     }
 
     /// Replace the optional `Host` allowlist. Entries are normalised with
@@ -240,6 +283,16 @@ impl Config {
     /// pointing the service at a different base URL never reuses old entries.
     pub fn upstream_identity(&self) -> String {
         self.base_url.as_str().trim_end_matches('/').to_owned()
+    }
+
+    /// Configured Argon2id hash, or `None` when the access gate is disabled.
+    pub fn platform_passwd(&self) -> Option<&str> {
+        self.platform_passwd.as_deref()
+    }
+
+    /// Whether the optional access password gate is enabled.
+    pub fn auth_enabled(&self) -> bool {
+        self.platform_passwd.is_some()
     }
 
     /// True when the upstream lives on this machine (local mock or a same-host

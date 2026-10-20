@@ -34,6 +34,7 @@ export const FALLBACK_CONFIG: AppConfig = {
     fetch_ttl_seconds: 86400,
   },
   upstream: { configured: true },
+  auth: { enabled: false },
 };
 
 /** 按 Unicode 码点计数（与后端字符数语义更接近） */

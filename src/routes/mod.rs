@@ -1,5 +1,6 @@
 //! HTTP routes.
 
+pub mod auth;
 pub mod fetch;
 pub mod meta;
 pub mod search;
@@ -21,6 +22,7 @@ pub fn api_router() -> Router<AppState> {
     Router::new()
         .route("/health", get(meta::health))
         .route("/config", get(meta::config))
+        .route("/auth/login", post(auth::login))
         .route("/search", post(search::search))
         .route("/fetch", post(fetch::fetch))
         .fallback(api_not_found)

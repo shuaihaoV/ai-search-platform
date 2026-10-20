@@ -1,6 +1,7 @@
 //! Crate root: wires configuration, state, middleware and routers together.
 
 pub mod assets;
+pub mod auth;
 pub mod cache;
 pub mod config;
 pub mod error;
@@ -38,16 +39,33 @@ pub fn build_app(state: AppState) -> Router {
         .route("/config", get(routes::meta::config))
         .route(
             "/search",
-            post(routes::search::search).route_layer(middleware::from_fn_with_state(
-                state.clone(),
-                security::limit_search,
-            )),
+            post(routes::search::search)
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    security::limit_search,
+                ))
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    security::require_auth,
+                )),
         )
         .route(
             "/fetch",
-            post(routes::fetch::fetch).route_layer(middleware::from_fn_with_state(
+            post(routes::fetch::fetch)
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    security::limit_fetch,
+                ))
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    security::require_auth,
+                )),
+        )
+        .route(
+            "/auth/login",
+            post(routes::auth::login).route_layer(middleware::from_fn_with_state(
                 state.clone(),
-                security::limit_fetch,
+                security::limit_login,
             )),
         )
         .layer(middleware::from_fn_with_state(

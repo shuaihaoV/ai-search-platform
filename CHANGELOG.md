@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### 新增
+
+- **可选访问密码**（`PLATFORM_PASSWD`）：设置后打开首页需输入密码，未通过验证
+  无法调用 `/api/search`、`/api/fetch`。密码以 **Argon2id 哈希**配置（非明文），
+  通过 `--hash-password` 子命令从 stdin 生成；登录换取 7 天有效的 HMAC 签名
+  token，仅存于浏览器 localStorage；登录接口独立限流 10 次/分钟/IP。
+  未设置该变量时功能完全惰性，行为与 0.1.0 一致。
+
 ## [0.1.0] - 2026-10-19
 
 首个开源版本。定位：把 DeepSeek Search & Fetch API 封装成自托管的 AI 搜索界面，

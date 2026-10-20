@@ -39,6 +39,55 @@ pub async fn guard_api(State(state): State<AppState>, request: Request, next: Ne
 }
 
 /// Middleware applying the per-IP search rate limit.
+/// Extract the bearer token from `Authorization` or `X-Platform-Token`.
+fn extract_token(request: &Request) -> Option<String> {
+    if let Some(value) = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    {
+        let token = value.trim();
+        if !token.is_empty() {
+            return Some(token.to_owned());
+        }
+    }
+    request
+        .headers()
+        .get("x-platform-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
+/// Require a valid access token when the password gate is enabled.
+///
+/// No-op when `PLATFORM_PASSWD` is unset, so unprotected deployments keep
+/// their previous behaviour byte for byte.
+pub async fn require_auth(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let Some(issuer) = state.token_issuer() else {
+        return next.run(request).await;
+    };
+    let token = extract_token(&request);
+    let ok = match token {
+        Some(token) => issuer.verify(&token, crate::cache::unix_now() as i64),
+        None => false,
+    };
+    if ok {
+        return next.run(request).await;
+    }
+    AppError::unauthorized("需要访问密码").into_response()
+}
+
+/// Brute-force brake for the login endpoint (separate bucket from search/fetch).
+pub async fn limit_login(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    match enforce_rate_limit(state.login_limiter(), &request, "登录") {
+        Ok(()) => next.run(request).await,
+        Err(err) => err.into_response(),
+    }
+}
+
 pub async fn limit_search(State(state): State<AppState>, request: Request, next: Next) -> Response {
     match enforce_rate_limit(state.search_limiter(), &request, "搜索") {
         Ok(()) => next.run(request).await,

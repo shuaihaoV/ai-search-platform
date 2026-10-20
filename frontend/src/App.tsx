@@ -4,7 +4,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { ApiError, AbortedError, getConfig, search as searchApi, fetchUrl } from './api/client';
+import {
+  ApiError,
+  AbortedError,
+  clearAuthToken,
+  getAuthToken,
+  getConfig,
+  isUnauthorizedError,
+  login as loginApi,
+  search as searchApi,
+  fetchUrl,
+  setAuthToken,
+} from './api/client';
 import {
   normalizeSettings,
   defaultsFromConfig,
@@ -41,6 +52,7 @@ import { SearchForm } from './components/SearchForm';
 import { AdvancedSettings } from './components/AdvancedSettings';
 import { SyntaxHelp, appendSyntaxExample } from './components/SyntaxHelp';
 import { Modal } from './components/Modal';
+import { PasswordGate } from './components/PasswordGate';
 import { ResultList } from './components/ResultList';
 import { FetchDrawer } from './components/FetchDrawer';
 import type { FetchTarget } from './components/FetchDrawer';
@@ -121,6 +133,13 @@ export default function App(): ReactElement {
 
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [configFailed, setConfigFailed] = useState(false);
+  // 访问密码门禁：null = 未知（配置未就绪），true = 需要密码
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+
   // /api/config 是否已落定（成功或失败）：首屏自动搜索需等它，确保默认值优先来自接口
   const [configSettled, setConfigSettled] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadTheme());
@@ -187,6 +206,12 @@ export default function App(): ReactElement {
         }
         setConfig(loaded);
         configRef.current = loaded;
+        // 门禁开启且本地没有 token 时，先要求输入密码
+        if (loaded.auth.enabled) {
+          setAuthRequired(getAuthToken() === null);
+        } else {
+          setAuthRequired(false);
+        }
         setSettings((prev) => {
           // 首选 /api/config 的 defaults；若用户曾保存过偏好，则在默认值之上叠加偏好
           const defaults = defaultsFromConfig(loaded);
@@ -229,6 +254,14 @@ export default function App(): ReactElement {
   }, []);
 
   /** 执行一次搜索 */
+  /** token 失效：清空并回到门禁 */
+  const requirePasswordAgain = useCallback((): void => {
+    clearAuthToken();
+    setAuthRequired(true);
+    setAuthNotice('访问密码已失效，请重新输入');
+    setAuthError(null);
+  }, []);
+
   const runSearch = useCallback(
     (rawQuery: string, options: { settings: SearchSettings; echo: RequestEcho; syncUrl: boolean }): void => {
       const queryValidation = validateQuery(rawQuery, limits.query_max_chars);
@@ -301,6 +334,11 @@ export default function App(): ReactElement {
           });
         } catch (error) {
           if (controller.signal.aborted || error instanceof AbortedError) {
+            return;
+          }
+          if (isUnauthorizedError(error)) {
+            requirePasswordAgain();
+            setSearchState(INITIAL_SEARCH_STATE);
             return;
           }
           const apiError =
@@ -631,6 +669,37 @@ export default function App(): ReactElement {
     setSettingsModalOpen(false);
   }, []);
 
+  /** 提交访问密码换取 token；成功后放行到正常界面 */
+  const handlePasswordSubmit = useCallback((password: string): void => {
+    setAuthLoading(true);
+    setAuthError(null);
+    void (async (): Promise<void> => {
+      try {
+        const result = await loginApi(password);
+        setAuthToken(result.token);
+        setAuthNotice(null);
+        setAuthRequired(false);
+        // 放行后把焦点交给搜索框
+        window.setTimeout(() => {
+          inputRef.current?.focus();
+        }, 0);
+      } catch (error) {
+        if (error instanceof AbortedError) {
+          return;
+        }
+        const message =
+          error instanceof ApiError && error.code === 'invalid_password'
+            ? '访问密码错误，请重试'
+            : error instanceof ApiError && error.code === 'rate_limited'
+              ? '尝试过于频繁，请稍后再试'
+              : '验证失败，请稍后重试';
+        setAuthError(message);
+      } finally {
+        setAuthLoading(false);
+      }
+    })();
+  }, []);
+
   /** 返回首页：中止在途请求、清空搜索态与关键词 */
   const handleHome = useCallback((): void => {
     searchAbortRef.current?.abort();
@@ -717,18 +786,33 @@ export default function App(): ReactElement {
 
       <main
         id="main-content"
-        className={isSearchView ? 'app-main app-main-search' : 'app-main'}
+        className={
+          authRequired ? 'app-main' : isSearchView ? 'app-main app-main-search' : 'app-main'
+        }
         tabIndex={-1}
       >
         {/* 页面唯一 h1：视觉上隐藏，供屏幕阅读器 / SEO 建立标题层级 */}
         <h1 className="sr-only">AI 搜索平台</h1>
         <div
           className={
-            isSearchView
-              ? 'container container-wide container-search'
-              : 'container container-landing'
+            authRequired
+              ? 'container container-landing'
+              : isSearchView
+                ? 'container container-wide container-search'
+                : 'container container-landing'
           }
         >
+          {authRequired ? (
+            <PasswordGate
+              onSubmit={handlePasswordSubmit}
+              loading={authLoading}
+              error={authError}
+              inputRef={passwordInputRef}
+              notice={authNotice}
+            />
+          ) : (
+            <>
+
           {showConfigWarning ? (
             <div className="notice notice-warn" role="status">
               <InfoIcon size={18} />
@@ -839,6 +923,8 @@ export default function App(): ReactElement {
               />
             )
           ) : null}
+            </>
+          )}
         </div>
       </main>
 

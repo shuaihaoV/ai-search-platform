@@ -166,6 +166,61 @@ async function parseJsonSafely(response: Response): Promise<unknown> {
   }
 }
 
+/** `Authorization` header for the current token, if any. */
+function authHeader(): Record<string, string> {
+  const token = getAuthToken();
+  return token === null ? {} : { Authorization: `Bearer ${token}` };
+}
+
+/** localStorage key for the access token (never the password). */
+export const AUTH_TOKEN_STORAGE_KEY = 'ai-search-platform:auth-token';
+
+/** In-memory fallback when localStorage is unavailable. */
+let memoryToken: string | null = null;
+
+/** Read the stored access token, if any. */
+export function getAuthToken(): string | null {
+  if (memoryToken !== null) {
+    return memoryToken;
+  }
+  try {
+    const raw = window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    if (raw === null || raw.trim() === '') {
+      return null;
+    }
+    memoryToken = raw;
+    return raw;
+  } catch {
+    // localStorage 被禁用（隐私模式等）：退化为仅内存，刷新后需重新输入密码
+    return null;
+  }
+}
+
+/** Persist the access token. Never pass the password here. */
+export function setAuthToken(token: string): void {
+  memoryToken = token;
+  try {
+    window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // 静默降级：仅本次会话有效
+  }
+}
+
+/** Drop the stored token (logout / server rejected it). */
+export function clearAuthToken(): void {
+  memoryToken = null;
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** True when the error means "the access gate wants a (new) token". */
+export function isUnauthorizedError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'unauthorized';
+}
+
 async function requestJson(
   path: string,
   init: RequestInit,
@@ -180,6 +235,7 @@ async function requestJson(
       signal: signal ?? null,
       headers: {
         Accept: 'application/json',
+        ...authHeader(),
         ...init.headers,
       },
     });
@@ -238,6 +294,44 @@ function mapHttpStatusToCode(status: number): string {
 }
 
 /** GET /api/config */
+export interface LoginResult {
+  token: string;
+  expiresAt: number;
+}
+
+/**
+ * Exchange the access password for a bearer token.
+ *
+ * The password travels only in the request body; callers must not persist it.
+ */
+export async function login(
+  password: string,
+  options: RequestOptions = {},
+): Promise<LoginResult> {
+  const body = await requestJson(
+    '/auth/login',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': REQUESTED_WITH_VALUE,
+      },
+      body: JSON.stringify({ password }),
+    },
+    options.signal,
+  );
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiError({ code: 'internal_error', message: '登录响应格式异常' });
+  }
+  const record = body as Record<string, unknown>;
+  const token = typeof record['token'] === 'string' ? record['token'] : '';
+  const expiresAt = typeof record['expires_at'] === 'number' ? record['expires_at'] : 0;
+  if (token === '') {
+    throw new ApiError({ code: 'internal_error', message: '登录响应缺少 token' });
+  }
+  return { token, expiresAt };
+}
+
 export async function getConfig(options: RequestOptions = {}): Promise<AppConfig> {
   const body = await requestJson('/config', { method: 'GET' }, options.signal);
   const record = toRecord(body);
@@ -271,6 +365,12 @@ export async function getConfig(options: RequestOptions = {}): Promise<AppConfig
     },
     upstream: {
       configured: toBooleanOr(upstream['configured'], false),
+    },
+    auth: {
+      enabled:
+        typeof record['auth'] === 'object' &&
+        record['auth'] !== null &&
+        (record['auth'] as Record<string, unknown>)['enabled'] === true,
     },
   };
 }

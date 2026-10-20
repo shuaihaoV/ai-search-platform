@@ -214,6 +214,7 @@ make run
 | `BIND_ADDR` | 否 | `127.0.0.1:8080` | HTTP 监听地址。默认仅本机可访问。 |
 | `RUST_LOG` | 否 | `info` | tracing 日志过滤。例：`debug`、`ai_search_platform=debug,tower_http=info`。 |
 | `ALLOWED_HOSTS` | 否 | 空（不限制） | 可选的 `Host` 白名单，逗号分隔（如 `search.example.com,www.example.com`）。用于公网/反向代理部署防 DNS rebinding：绑定回环时，回环 Host 之外只放行白名单；绑定非回环时，**设置后才校验**（回环 Host 始终放行）。条目不区分大小写，忽略端口与末尾的点。 |
+| `PLATFORM_PASSWD` | 否 | 空（不启用） | **可选访问密码**，值为 Argon2id 哈希（不是明文）。设置后首页会要求输入密码，未验证无法调用 `/api/search`、`/api/fetch`。用 `./ai-search-platform --hash-password` 生成（从 stdin 读取，不留在 shell 历史）。留空 = 关闭该功能，行为与之前完全一致。 |
 
 \* **缺失 `DEEPSEEK_API_KEY` 时服务仍能启动**：`/api/health`、`/api/config` 与静态页面均正常，
 但 `/api/search` 与 `/api/fetch` 返回 `502` + `code: "upstream_not_configured"`，
@@ -334,8 +335,9 @@ make run
 - 所有 `/api/*` 请求都会校验 `Host`（拒绝重复 Host、非法字符；绑定回环时只接受回环主机名）。
 - 请求体上限 **16 KiB**，超出返回 `413 payload_too_large`。
 - 请求体**拒绝未知字段**（`deny_unknown_fields`），多余字段会返回 `400 invalid_request`。
-- 本服务**没有 API Token 认证**：它面向本机/内网或反向代理后的场景，
-  公网部署必须由反向代理完成鉴权（见 [安全](#-安全)）。
+- 本服务**默认没有多用户鉴权**：面向本机/内网或反向代理后的场景。
+  如需在公网直接暴露，建议同时：① 设置 `PLATFORM_PASSWD` 启用访问密码（单密码共享，
+  非多用户体系）；② 仍由反向代理完成 TLS 与访问控制（见 [安全](#-安全)）。
 
 ### `GET /api/health`
 
@@ -655,6 +657,7 @@ ai-search-platform/
 | **SSRF** | `/api/fetch` 只接受 `http/https`，拒绝 URL 内嵌凭据；拦截回环、私有网段、链路本地（含 `169.254.169.254` 云元数据）、CGNAT、ULA、IPv4-mapped IPv6 等，命中返回 `403`；上游客户端**不跟随重定向**。 |
 | **限流** | 每 IP 每分钟 **30 次**，search 与 fetch 独立计数；客户端 IP 仅在直连对端为回环（同机反代）时才信任 `X-Forwarded-For`。 |
 | **资源耗尽** | 请求体 ≤ 16 KiB；上游响应 ≤ 16 MiB；上游并发 ≤ 8；上游超时 30 秒、整请求 90 秒；query ≤ 128 字符；错误 `message` 截断。 |
+| **访问控制（可选）** | 设置 `PLATFORM_PASSWD` 后启用访问密码：密码以 Argon2id 哈希配置，登录换取 7 天有效的 HMAC 签名 token（`v1.<expiry>.<sig>`，密钥由哈希派生，改密码即全部失效），仅保存在浏览器 localStorage，不落 URL/日志；登录接口独立限流 10 次/分钟/IP 防爆破。**未设置时该功能完全惰性**。 |
 | **信息泄露** | `/api/config` 只暴露非敏感项；错误信息不透出内部路径；API Key 在 `Debug` 输出中固定脱敏；`.env`、`.cache`、`target`、`frontend/dist` 均在 `.gitignore`。 |
 | **panic 隔离** | `CatchPanicLayer` 把 handler panic 转成 `500`，进程保持存活继续服务（release profile 未启用 `panic = "abort"`）。 |
 
