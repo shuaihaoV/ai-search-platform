@@ -1,0 +1,21 @@
+# Issue 模板选择页配置
+#
+# blank_issues_enabled: false —— 关闭「Open a blank issue」入口，
+# 强制使用结构化模板，避免缺少版本/环境/复现步骤的低质量 issue。
+blank_issues_enabled: false
+
+contact_links:
+  # 安全漏洞必须走私密渠道，不能走公开 issue
+  - name: 🔒 安全漏洞（私密报告）
+    url: https://github.com/shuaihaoV/ai-search-platform/security/advisories/new
+    about: 请勿在公开 Issue 中披露安全漏洞，使用 GitHub Security Advisory 私密报告，详见 SECURITY.md
+
+  # 使用与部署问题优先走 Discussions，便于沉淀 FAQ
+  - name: 💬 使用讨论 / 问答
+    url: https://github.com/shuaihaoV/ai-search-platform/discussions
+    about: 部署配置、使用疑问、经验分享等非缺陷话题，欢迎在 Discussions 中交流
+
+  # 文档入口，减少「怎么用」类 issue
+  - name: 📖 阅读文档
+    url: https://github.com/shuaihaoV/ai-search-platform#readme
+    about: 快速开始、配置说明、API 契约与搜索语法都能在 README 和 docs/ 中找到

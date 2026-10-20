@@ -1,0 +1,134 @@
+name: Bug 报告
+description: 报告一个可复现的缺陷（功能异常、崩溃、渲染错误等）。安全漏洞请勿在此提交，改用私密渠道。
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 提交前请先确认
+
+        - 已经搜索过 [现有 Issues](https://github.com/shuaihaoV/ai-search-platform/issues?q=is%3Aissue)，没有重复。
+        - 已经阅读 [README](https://github.com/shuaihaoV/ai-search-platform/blob/main/README.md) 与 [docs/API.md](https://github.com/shuaihaoV/ai-search-platform/blob/main/docs/API.md)。
+        - **安全漏洞请勿公开提交**：请使用
+          [GitHub Security Advisory](https://github.com/shuaihaoV/ai-search-platform/security/advisories/new) 私密报告，
+          详见 [SECURITY.md](https://github.com/shuaihaoV/ai-search-platform/blob/main/SECURITY.md)。
+
+        请尽量填写完整，一个可复现的 Bug 报告能显著缩短修复时间。
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索过现有 Issues，确认这不是重复问题
+          required: true
+        - label: 我已确认这不是安全漏洞（若是，我会改用 Security Advisory 私密报告）
+          required: true
+
+  - type: dropdown
+    id: deploy-method
+    attributes:
+      label: 部署方式
+      description: 请选择你运行本项目的方式
+      options:
+        - Docker Compose（docker compose up）
+        - Docker（docker run）
+        - 源码构建（make build / cargo build --release）
+        - 下载 Release 预编译二进制
+        - 本地开发模式（make dev-backend + make dev-frontend）
+        - 其它（请在下方说明）
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 镜像 tag、Release 版本或 `git rev-parse --short HEAD` 的提交号
+      placeholder: "v0.1.0 / 0.1.0 / ghcr.io/shuaihaov/ai-search-platform:v0.1.0 / commit abc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、架构、容器运行时（如适用）
+      placeholder: "macOS 15.1 arm64 / Ubuntu 24.04 x86_64 / Docker 27.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: auth-enabled
+    attributes:
+      label: 是否启用了访问密码（PLATFORM_PASSWD）
+      options:
+        - 未启用
+        - 已启用
+        - 不确定 / 未配置
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请给出最小、可重复的步骤。涉及 API 时请附上完整 curl 命令。
+      placeholder: |
+        1. 启动服务：DEEPSEEK_API_KEY=... make run
+        2. 打开 http://127.0.0.1:8080
+        3. 在搜索框输入「...」并回车
+        4. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      placeholder: 你认为应该发生什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际发生了什么？如有报错信息请完整粘贴。
+      placeholder: 实际结果、错误提示、HTTP 状态码与响应体等
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: |
+        服务端日志（建议 `RUST_LOG=debug` 重跑一次）与浏览器 Console / Network 面板内容。
+        **提交前请删除 API Key、访问密码哈希、token 等敏感信息。**
+      render: shell
+      placeholder: |
+        $ RUST_LOG=debug ./ai-search-platform
+        ...
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置（已脱敏）
+      description: |
+        仅粘贴与问题相关的非敏感配置。**务必删除 `DEEPSEEK_API_KEY` 与 `PLATFORM_PASSWD` 的真实值。**
+      render: shell
+      placeholder: |
+        DEEPSEEK_BASE_URL=https://api.deepseek.com
+        BIND_ADDR=127.0.0.1:8080
+        RUST_LOG=info
+        ALLOWED_HOSTS=
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充信息
+      description: 截图、视频、缓存状态（`ls .cache/search`）、`/api/config` 返回（脱敏后）等
+    validations:
+      required: false
