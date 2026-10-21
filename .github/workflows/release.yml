@@ -113,7 +113,7 @@ jobs:
           pnpm build
 
       - name: Install Rust 1.97.1（含目标三元组）
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.target }}
 
