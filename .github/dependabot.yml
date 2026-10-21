@@ -35,6 +35,12 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "deps(actions)"
+    ignore:
+      # `dtolnay/rust-toolchain@<x>` 的 `@` 后面是 **Rust 工具链版本**，
+      # 不是 action 自身的版本。Dependabot 会误以为它是版本号并尝试升级
+      # （例如 1.88.0 -> 1.120.0），导致 CI 去安装一个不存在的工具链。
+      # 工具链版本由我们按 MSRV 策略手动维护（见 ci.yml）。
+      - dependency-name: "dtolnay/rust-toolchain"
 
   # Dockerfile 基础镜像
   - package-ecosystem: docker
