@@ -99,7 +99,7 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry \
 # 静态 busybox：提供 healthcheck 用的 wget，以及一个最小排障 shell。
 # 常用 applet 软链到 /usr/local/bin，使 `docker exec -it <container> sh` 直接可用；
 # 所有软链都指向同一个 /busybox 二进制，几乎不增加镜像体积。
-FROM busybox:1.37.0-musl AS tools
+FROM busybox:1.38.0-musl AS tools
 
 RUN mkdir -p /app/.cache/search /app/.cache/fetch /debug-bin \
  && for applet in sh cat ls grep sed awk id ps wget rm cp mv mkdir touch \
